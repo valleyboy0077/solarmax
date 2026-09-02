@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="{{ state.settings.theme if state is defined else 'classic-dark' }}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Solarmax{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Solarmax</div>
+        <h1>Solar optimisation control room</h1>
+      </div>
+      <nav class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/inverters">Inverters</a>
+        <a href="/plans">Plans & TOU</a>
+        <a href="/billing">Billing</a>
+        <a href="/settings">Settings</a>
+      </nav>
+    </header>
+    <main class="page-shell">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

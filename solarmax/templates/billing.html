@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Solarmax Billing{% endblock %}
+{% block content %}
+<section class="panel form-panel">
+  <div class="panel-head"><div><div class="eyebrow">Current bill</div><h2>Bill breakdown by day and TOU period</h2></div></div>
+  <p class="bill-total">Total: ${{ '%.2f'|format((bill.total_cents / 100.0) if bill.total_cents else 0) }}</p>
+  <table>
+    <thead><tr><th>Day</th><th>Period</th><th>Direction</th><th>kWh</th><th>Rate</th><th>Amount</th></tr></thead>
+    <tbody>
+      {% for row in bill.rows %}
+      <tr>
+        <td>{{ row.day }}</td>
+        <td>{{ row.period_label }}</td>
+        <td>{{ row.direction }}</td>
+        <td>{{ '%.3f'|format(row.kwh) }}</td>
+        <td>{{ '%.2f'|format(row.rate_cents_per_kwh) }}c</td>
+        <td>{{ '%.2f'|format(row.amount_cents / 100.0) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Solarmax Plans{% endblock %}
+{% block content %}
+<section class="grid two-col">
+  <article class="panel form-panel">
+    <div class="panel-head"><div><div class="eyebrow">Power plans</div><h2>Add or edit plan</h2></div></div>
+    {% for plan in plans %}
+    <form action="/api/plans" method="post" class="stack-form inset-form">
+      <input type="hidden" name="plan_id" value="{{ plan.id }}" />
+      <label>Provider name <input name="provider_name" value="{{ plan.provider_name }}" /></label>
+      <label>Plan name <input name="plan_name" value="{{ plan.plan_name }}" /></label>
+      <label>Billing cycle
+        <select name="billing_cycle">
+          <option value="monthly" {% if plan.billing_cycle == 'monthly' %}selected{% endif %}>Monthly</option>
+          <option value="quarterly" {% if plan.billing_cycle == 'quarterly' %}selected{% endif %}>3 Monthly</option>
+        </select>
+      </label>
+      <label>Billing start day <input type="number" min="1" max="31" name="billing_start_day" value="{{ plan.billing_start_day }}" /></label>
+      <label>Billing start month <input type="number" min="1" max="12" name="billing_start_month" value="{{ plan.billing_start_month }}" /></label>
+      <label>Notes <textarea name="notes">{{ plan.notes }}</textarea></label>
+      <button class="primary" type="submit">Save plan</button>
+    </form>
+    {% endfor %}
+  </article>
+  <article class="panel form-panel">
+    <div class="panel-head"><div><div class="eyebrow">TOU brackets</div><h2>Import/export rates</h2></div></div>
+    {% for plan in plans %}
+      <form action="/api/tou/{{ plan.id }}" method="post" class="stack-form inset-form">
+        <input type="hidden" name="payload" value='{{ tou_by_plan[plan.id] | tojson }}' />
+        <p><strong>{{ plan.provider_name }} — {{ plan.plan_name }}</strong></p>
+        <p>Edit TOU brackets directly in JSON for this first version. Brackets must be 30-minute aligned.</p>
+        <textarea name="payload" rows="12">{{ tou_by_plan[plan.id] | tojson(indent=2) }}</textarea>
+        <button type="submit">Save TOU periods</button>
+      </form>
+    {% endfor %}
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Solarmax Settings{% endblock %}
+{% block content %}
+<section class="panel form-panel">
+  <div class="panel-head"><div><div class="eyebrow">Settings</div><h2>Application settings</h2></div></div>
+  <form action="/api/settings" method="post" class="stack-form">
+    <label>Theme
+      <select name="theme">
+        {% for option in ['classic-light','classic-dark','solar-glass','midnight-neon','warm-desert'] %}
+        <option value="{{ option }}" {% if state.settings.theme == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Mode
+      <select name="mode">
+        <option value="manual" {% if state.settings.mode == 'manual' %}selected{% endif %}>Manual</option>
+        <option value="ai" {% if state.settings.mode == 'ai' %}selected{% endif %}>AI</option>
+      </select>
+    </label>
+    <label>Site name <input name="site_name" value="{{ state.settings.site_name }}" /></label>
+    <label>Latitude <input type="number" step="0.000001" name="site_lat" value="{{ state.settings.site_lat }}" /></label>
+    <label>Longitude <input type="number" step="0.000001" name="site_lon" value="{{ state.settings.site_lon }}" /></label>
+    <label>Poll interval seconds <input type="number" min="5" max="3600" name="poll_interval_seconds" value="{{ state.settings.poll_interval_seconds }}" /></label>
+    <label>Active plan
+      <select name="active_plan_id">
+        <option value="">None</option>
+        {% for plan in state.power_plans %}
+        <option value="{{ plan.id }}" {% if state.settings.active_plan_id == plan.id %}selected{% endif %}>{{ plan.provider_name }} — {{ plan.plan_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="primary" type="submit">Save settings</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Solarmax Dashboard{% endblock %}
+{% block content %}
+<section class="hero-card">
+  <div>
+    <div class="eyebrow">Live overview</div>
+    <h2>{{ settings.site_name }}</h2>
+    <p>Poll interval: {{ settings.poll_interval_seconds }}s · Mode: {{ settings.mode|capitalize }} · Theme: {{ settings.theme }}</p>
+  </div>
+  <form action="/api/poll-now" method="post">
+    <button class="primary" type="submit">Poll now</button>
+  </form>
+</section>
+
+<section class="grid metrics">
+  <article class="panel metric"><span>Solar generation</span><strong>{{ '%.2f'|format(state.live.solar_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Load use</span><strong>{{ '%.2f'|format(state.live.load_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Grid import</span><strong>{{ '%.2f'|format(state.live.grid_import_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Grid export</span><strong>{{ '%.2f'|format(state.live.grid_export_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Battery charge</span><strong>{{ '%.2f'|format(state.live.battery_charge_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Battery discharge</span><strong>{{ '%.2f'|format(state.live.battery_discharge_kw) }} kW</strong></article>
+</section>
+
+<section class="grid dashboard-grid">
+  <article class="panel chart-panel">
+    <div class="panel-head">
+      <div>
+        <div class="eyebrow">Bill trend</div>
+        <h3>Running daily bill delta</h3>
+      </div>
+      <div class="bill-pill">Current bill: <button id="bill-toggle" class="linkish" type="button">${{ '%.2f'|format((bill.total_cents / 100.0) if bill.total_cents else 0) }}</button></div>
+    </div>
+    <div class="chart" id="bill-chart" data-points='{{ chart_points | tojson }}'></div>
+  </article>
+
+  <article class="panel summary-panel">
+    <div class="panel-head">
+      <div>
+        <div class="eyebrow">Bill details</div>
+        <h3>Current bill breakdown</h3>
+      </div>
+    </div>
+    <div id="bill-details" class="bill-details hidden">
+      <table>
+        <thead><tr><th>Day</th><th>Period</th><th>Dir</th><th>kWh</th><th>Rate</th><th>Amount</th></tr></thead>
+        <tbody>
+          {% for row in bill.rows %}
+          <tr>
+            <td>{{ row.day }}</td>
+            <td>{{ row.period_label }}</td>
+            <td>{{ row.direction }}</td>
+            <td>{{ '%.3f'|format(row.kwh) }}</td>
+            <td>{{ '%.2f'|format(row.rate_cents_per_kwh) }}c</td>
+            <td>{{ '%.2f'|format(row.amount_cents / 100.0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="info-stack">
+      <p><strong>Active plan:</strong> {{ bill.plan.provider_name if bill.plan else 'No active plan' }} {{ bill.plan.plan_name if bill.plan else '' }}</p>
+      <p><strong>Connected inverters:</strong> {{ state.inverters|length }}</p>
+      <p><strong>AI mode:</strong> {{ settings.mode|capitalize }}</p>
+    </div>
+  </article>
+</section>
+
+<section class="grid inverter-strip">
+  {% for inverter in state.inverters %}
+  <article class="panel inverter-card">
+    <div class="eyebrow">Inverter {{ inverter.id }}</div>
+    <h3>{{ inverter.name }}</h3>
+    <p>{{ inverter.model }}</p>
+    <p>IP {{ inverter.ip_address or 'not set' }} · Subnet {{ inverter.subnet or 'not set' }}</p>
+    <div class="chip-row">
+      <span class="chip">Reserve {{ inverter.battery_reserve_percent }}%</span>
+      <span class="chip">Feed-in {{ inverter.battery_feed_in_limit_kw }} kW</span>
+      <span class="chip">Export cap {{ inverter.export_limit_kw }} kW</span>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

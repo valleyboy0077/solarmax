@@ -1,0 +1,16 @@
+services:
+  solarmax:
+    build: .
+    container_name: solarmax
+    ports:
+      - "9117:9117"
+    volumes:
+      - solarmax-data:/data
+    environment:
+      - SOLARMAX_DB_PATH=/data/solarmax.db
+      - SOLARMAX_HOST=0.0.0.0
+      - SOLARMAX_PORT=9117
+    restart: unless-stopped
+
+volumes:
+  solarmax-data:

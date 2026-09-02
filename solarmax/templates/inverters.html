@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Solarmax Inverters{% endblock %}
+{% block content %}
+<section class="grid two-col">
+  <article class="panel form-panel">
+    <div class="panel-head"><div><div class="eyebrow">Inverter profile</div><h2>Edit / add inverter</h2></div></div>
+    {% for inverter in inverters %}
+    <form action="/api/inverters" method="post" class="stack-form inset-form">
+      <input type="hidden" name="inverter_id" value="{{ inverter.id }}" />
+      <label>Name <input name="name" value="{{ inverter.name }}" /></label>
+      <label>Model <input name="model" value="{{ inverter.model }}" /></label>
+      <label>Adapter module <input name="adapter_kind" value="{{ inverter.adapter_kind }}" /></label>
+      <label>IP address <input name="ip_address" value="{{ inverter.ip_address }}" /></label>
+      <label>Subnet <input name="subnet" value="{{ inverter.subnet }}" /></label>
+      <label>Battery feed-in limit kW <input type="number" step="0.1" name="battery_feed_in_limit_kw" value="{{ inverter.battery_feed_in_limit_kw }}" /></label>
+      <label>Battery reserve % <input type="number" min="0" max="100" name="battery_reserve_percent" value="{{ inverter.battery_reserve_percent }}" /></label>
+      <label>Export limit kW <input type="number" step="0.1" name="export_limit_kw" value="{{ inverter.export_limit_kw }}" /></label>
+      <label><input type="checkbox" name="allow_grid_charge" {% if inverter.allow_grid_charge %}checked{% endif %} /> Allow grid charge</label>
+      <label><input type="checkbox" name="enabled" {% if inverter.enabled %}checked{% endif %} /> Enabled</label>
+      <label>Notes <textarea name="notes">{{ inverter.notes }}</textarea></label>
+      <button class="primary" type="submit">Save inverter</button>
+    </form>
+    {% endfor %}
+  </article>
+  <article class="panel side-copy">
+    <div class="eyebrow">First version</div>
+    <h2>SigenStor EC 20.0 TP AU</h2>
+    <p>The initial build uses a pluggable simulation-backed module for this inverter family so the UI, billing and AI workflow are live immediately.</p>
+    <p>Future inverter types can be added by dropping in a new module under <code>solarmax/inverters/</code> and adding it to the registry.</p>
+    <form action="/api/ai/apply" method="post" class="stack-form">
+      <label>Apply AI recommendation to inverter ID <input type="number" name="inverter_id" value="1" /></label>
+      <button type="submit">Fetch weather and apply recommendation</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

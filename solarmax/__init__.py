@@ -1,0 +1,1 @@
+"""Solarmax package."""
