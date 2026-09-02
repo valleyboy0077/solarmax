@@ -244,6 +244,8 @@ def api_plans(
 
 @app.post("/api/tou/{plan_id}")
 def api_tou(plan_id: int, payload: str = Form(...)):
+    if not any(p["id"] == plan_id for p in service.list_power_plans()):
+        raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
         periods = json.loads(payload)
         if not isinstance(periods, list) or not all(isinstance(period, dict) for period in periods):
