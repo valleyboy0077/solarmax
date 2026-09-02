@@ -62,6 +62,8 @@ def aggregate_bill_lines(snapshot_rows: Iterable[dict], tou_periods: list[dict])
                 continue
             kwh = float(row.get(kwh_key, 0.0))
             amount = kwh * float(period["rate_cents_per_kwh"])
+            if direction == "export":
+                amount *= -1.0
             lines.append(
                 {
                     "day": captured.date(),
@@ -89,7 +91,7 @@ def rollup_by_day_and_period(lines: Iterable[dict]) -> list[dict]:
     for (day, period_label, direction), bucket in sorted(totals.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
         out.append(
             {
-                "day": day,
+                "day": day.isoformat(),
                 "period_label": period_label,
                 "direction": direction,
                 "kwh": round(bucket["kwh"], 4),

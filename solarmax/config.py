@@ -6,7 +6,8 @@ from pathlib import Path
 import os
 
 
-DEFAULT_DB_PATH = Path(os.environ.get("SOLARMAX_DB_PATH", "/data/solarmax.db"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DB_PATH = Path(os.environ.get("SOLARMAX_DB_PATH", str(PROJECT_ROOT / "data" / "solarmax.db")))
 DEFAULT_THEME = "classic-dark"
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_SITE_LAT = -27.4698

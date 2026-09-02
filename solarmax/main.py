@@ -55,20 +55,21 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 def dashboard(request: Request) -> HTMLResponse:
     state = service.dashboard_state()
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
-        {"request": request, "state": state, "chart_points": service.chart_points(), "bill": state["bill"], "settings": state["settings"]},
+        {"state": state, "chart_points": service.chart_points(), "bill": state["bill"], "settings": state["settings"]},
     )
 
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request) -> HTMLResponse:
     state = service.dashboard_state()
-    return templates.TemplateResponse("settings.html", {"request": request, "state": state})
+    return templates.TemplateResponse(request, "settings.html", {"state": state})
 
 
 @app.get("/inverters", response_class=HTMLResponse)
 def inverters_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("inverters.html", {"request": request, "inverters": service.list_inverters()})
+    return templates.TemplateResponse(request, "inverters.html", {"inverters": service.list_inverters()})
 
 
 @app.get("/plans", response_class=HTMLResponse)
@@ -76,12 +77,13 @@ def plans_page(request: Request) -> HTMLResponse:
     plans = service.list_power_plans()
     active = service.load_app_settings().active_plan_id
     tou = {plan["id"]: service.list_tou_periods(plan["id"]) for plan in plans}
-    return templates.TemplateResponse("plans.html", {"request": request, "plans": plans, "tou_by_plan": tou, "active_plan_id": active})
+    return templates.TemplateResponse(request, "plans.html", {"plans": plans, "tou_by_plan": tou, "active_plan_id": active})
 
 
 @app.get("/billing", response_class=HTMLResponse)
 def billing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("billing.html", {"request": request, "bill": service.current_bill_summary()})
+    bill = service.current_bill_summary()
+    return templates.TemplateResponse(request, "billing.html", {"bill": bill})
 
 
 @app.get("/api/state")
@@ -107,7 +109,7 @@ def api_settings(
     site_lat: float = Form(...),
     site_lon: float = Form(...),
     poll_interval_seconds: int = Form(...),
-    active_plan_id: int | None = Form(None),
+    active_plan_id: str = Form(""),
 ):
     service.save_app_settings(
         {
@@ -117,7 +119,7 @@ def api_settings(
             "site_lat": site_lat,
             "site_lon": site_lon,
             "poll_interval_seconds": poll_interval_seconds,
-            "active_plan_id": active_plan_id,
+            "active_plan_id": int(active_plan_id) if active_plan_id else None,
         }
     )
     return RedirectResponse("/settings", status_code=303)
