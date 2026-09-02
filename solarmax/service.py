@@ -152,7 +152,13 @@ class SolarmaxService:
             return fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ? ORDER BY direction, start_minute", (plan_id,))
 
     def replace_tou_periods(self, plan_id: int, periods: list[dict[str, Any]]) -> None:
-        validated = [TouPeriod(plan_id=plan_id, **period) for period in periods]
+        # IDs and plan ownership come from persistence/the route, never client
+        # payload. This also keeps callers using rows returned from the database
+        # from passing duplicate keyword arguments to TouPeriod.
+        validated = [
+            TouPeriod(plan_id=plan_id, **{key: value for key, value in period.items() if key not in {"id", "plan_id"}})
+            for period in periods
+        ]
         with db_session(self.db_path) as conn:
             conn.execute("DELETE FROM tou_periods WHERE plan_id = ?", (plan_id,))
             conn.executemany(

@@ -27,7 +27,7 @@
     {% for plan in plans %}
       <form action="/api/tou/{{ plan.id }}" method="post" class="stack-form inset-form">
         <p><strong>{{ plan.provider_name }} — {{ plan.plan_name }}</strong></p>
-        <p>Edit TOU brackets directly in JSON for this first version. Brackets must be 30-minute aligned.</p>
+        <p>Edit TOU brackets in JSON. Times use 24-hour HH:MM format and brackets must be 30-minute aligned.</p>
         <textarea name="payload" rows="12">{{ tou_by_plan[plan.id] | tojson(indent=2) }}</textarea>
         <button type="submit">Save TOU periods</button>
       </form>

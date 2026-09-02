@@ -9,7 +9,7 @@
     <tbody>
       {% for row in bill.rows %}
       <tr>
-        <td>{{ row.day }}</td>
+        <td>{{ format_au_date(row.day) }}</td>
         <td>{{ row.period_label }}</td>
         <td>{{ row.direction }}</td>
         <td>{{ '%.3f'|format(row.kwh) }}</td>

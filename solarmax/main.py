@@ -5,12 +5,14 @@ import json
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from starlette.staticfiles import StaticFiles
 
 from .config import RuntimeConfig
@@ -19,6 +21,57 @@ from .service import SolarmaxService
 config = RuntimeConfig()
 service = SolarmaxService(config.db_path)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+def format_au_date(value: str | date | datetime) -> str:
+    """Format an ISO date for display without changing its API/storage form."""
+
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    return datetime.strptime(value, "%Y-%m-%d").strftime("%d/%m/%Y")
+
+
+def _minute_to_time(value: int) -> str:
+    """Render minutes since midnight as a 24-hour time for the TOU editor."""
+
+    hours, minutes = divmod(int(value), 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _time_to_minute(value: Any) -> int:
+    """Convert a 24-hour HH:MM editor value back to minutes since midnight."""
+
+    if isinstance(value, int):  # Accept legacy numeric textarea payloads too.
+        return value
+    if not isinstance(value, str):
+        raise ValueError("TOU times must use HH:MM format")
+    if value == "24:00":
+        return 24 * 60
+    if len(value) != 5 or value[2] != ":" or not (value[:2] + value[3:]).isdigit():
+        raise ValueError("TOU times must use 24-hour HH:MM format")
+    try:
+        parsed = datetime.strptime(value, "%H:%M")
+    except ValueError as exc:
+        raise ValueError("TOU times must use 24-hour HH:MM format") from exc
+    return parsed.hour * 60 + parsed.minute
+
+
+def _tou_for_editor(periods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepare persisted TOU rows for the human-readable JSON editor."""
+
+    return [
+        {
+            **period,
+            "start_minute": _minute_to_time(period["start_minute"]),
+            "end_minute": _minute_to_time(period["end_minute"]),
+        }
+        for period in periods
+    ]
+
+
+templates.env.globals["format_au_date"] = format_au_date
 
 _stop_event = threading.Event()
 _poll_thread: threading.Thread | None = None
@@ -78,7 +131,7 @@ def plans_page(request: Request) -> HTMLResponse:
     state = service.dashboard_state()
     plans = service.list_power_plans()
     active = service.load_app_settings().active_plan_id
-    tou = {plan["id"]: service.list_tou_periods(plan["id"]) for plan in plans}
+    tou = {plan["id"]: _tou_for_editor(service.list_tou_periods(plan["id"])) for plan in plans}
     return templates.TemplateResponse(request, "plans.html", {"state": state, "plans": plans, "tou_by_plan": tou, "active_plan_id": active})
 
 
@@ -191,8 +244,20 @@ def api_plans(
 
 @app.post("/api/tou/{plan_id}")
 def api_tou(plan_id: int, payload: str = Form(...)):
-    periods = json.loads(payload)
-    service.replace_tou_periods(plan_id, periods)
+    try:
+        periods = json.loads(payload)
+        if not isinstance(periods, list) or not all(isinstance(period, dict) for period in periods):
+            raise ValueError("TOU payload must be a JSON array of periods")
+        for period in periods:
+            # DB identity and ownership are not editable fields.  In particular,
+            # never pass a persisted plan_id alongside the route's plan_id.
+            period.pop("id", None)
+            period.pop("plan_id", None)
+            period["start_minute"] = _time_to_minute(period.get("start_minute"))
+            period["end_minute"] = _time_to_minute(period.get("end_minute"))
+        service.replace_tou_periods(plan_id, periods)
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RedirectResponse("/plans", status_code=303)
 
 

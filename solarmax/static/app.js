@@ -1,5 +1,10 @@
 /* Solarmax dashboard behaviours. */
 (function () {
+  function formatAustralianDate(isoDate) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : isoDate;
+  }
+
   function renderChart() {
     const chart = document.getElementById('bill-chart');
     if (!chart) return;
@@ -13,11 +18,11 @@
       const height = Math.max(8, Math.round((Math.abs(point.amount_cents) / maxAbs) * 220));
       const cls = point.amount_cents < 0 ? 'bar neg' : 'bar';
       return `
-        <div class="bar-wrap" title="${point.day}: $${(point.amount_cents / 100).toFixed(2)}">
+        <div class="bar-wrap" title="${formatAustralianDate(point.day)}: $${(point.amount_cents / 100).toFixed(2)}">
           <div class="bar-slot" style="height: 220px; display:flex; align-items:${point.amount_cents < 0 ? 'start' : 'end'}; width:100%;">
             <div class="${cls}" style="height:${height}px"></div>
           </div>
-          <div class="label">${point.day}</div>
+          <div class="label">${formatAustralianDate(point.day)}</div>
           <div class="value">$${(point.amount_cents / 100).toFixed(2)}</div>
         </div>
       `;
