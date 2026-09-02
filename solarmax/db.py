@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from .config import DEFAULT_POLL_SECONDS, DEFAULT_THEME, DEFAULT_SITE_LAT, DEFAULT_SITE_LON
+from .config import DEFAULT_POLL_SECONDS, DEFAULT_THEME, DEFAULT_SITE_LAT, DEFAULT_SITE_LON, PROJECT_ROOT
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -100,7 +100,12 @@ CREATE TABLE IF NOT EXISTS telemetry_rollups (
 def connect(path: Path) -> sqlite3.Connection:
     """Open a SQLite connection with sensible row handling."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        fallback_dir = PROJECT_ROOT / "data"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        path = fallback_dir / path.name
     conn = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
