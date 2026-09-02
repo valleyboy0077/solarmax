@@ -118,6 +118,18 @@ th, td { text-align: left; padding: 0.6rem 0.4rem; border-bottom: 1px solid var(
 .inset-form { padding: 1rem; border: 1px dashed var(--border); border-radius: 20px; background: rgba(255,255,255,0.03); margin-bottom: 1rem; }
 .bill-total { font-size: 2rem; font-weight: 800; }
 .linkish { display: inline; padding: 0; border: none; box-shadow: none; background: transparent; color: var(--accent); }
+.unreachable-banner {
+  margin-bottom: 1rem;
+  padding: 0.9rem 1.2rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 176, 90, 0.4);
+  background: linear-gradient(180deg, rgba(255, 176, 90, 0.14), rgba(255, 176, 90, 0.05));
+  color: var(--text);
+}
+.unreachable-banner strong { color: #ffca80; }
+.chip-ok { border-color: rgba(124, 255, 176, 0.5); color: var(--accent-2); }
+.chip-warn { border-color: rgba(255, 176, 90, 0.5); color: #ffca80; }
+.chip-off { opacity: 0.6; }
 @media (max-width: 1200px) {
   .metrics, .dashboard-grid, .two-col, .inverter-strip { grid-template-columns: 1fr 1fr; }
 }

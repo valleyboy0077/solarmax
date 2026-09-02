@@ -7,6 +7,17 @@
     {% for inverter in inverters %}
     <form action="/api/inverters" method="post" class="stack-form inset-form">
       <input type="hidden" name="inverter_id" value="{{ inverter.id }}" />
+      <div class="chip-row">
+        {% if inverter.enabled %}
+          {% if inverter.reachable %}
+            <span class="chip chip-ok">Reachable</span>
+          {% else %}
+            <span class="chip chip-warn">Unreachable</span>
+          {% endif %}
+        {% else %}
+          <span class="chip chip-off">Disabled</span>
+        {% endif %}
+      </div>
       <label>Name <input name="name" value="{{ inverter.name }}" /></label>
       <label>Model <input name="model" value="{{ inverter.model }}" /></label>
       <label>Adapter module <input name="adapter_kind" value="{{ inverter.adapter_kind }}" /></label>
@@ -25,7 +36,7 @@
   <article class="panel side-copy">
     <div class="eyebrow">First version</div>
     <h2>SigenStor EC 20.0 TP AU</h2>
-    <p>The initial build uses a pluggable simulation-backed module for this inverter family so the UI, billing and AI workflow are live immediately.</p>
+    <p>The initial build reads live telemetry from the SigenStor over Modbus TCP using a pluggable adapter module. When the inverter is unreachable, all live values show "—" until it responds again — no simulated data is ever shown.</p>
     <p>Future inverter types can be added by dropping in a new module under <code>solarmax/inverters/</code> and adding it to the registry.</p>
     <form action="/api/ai/apply" method="post" class="stack-form">
       <label>Apply AI recommendation to inverter ID <input type="number" name="inverter_id" value="1" /></label>

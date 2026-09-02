@@ -171,20 +171,41 @@ class SolarmaxService:
     # ---------------------------------------------------------------------
 
     def poll_once(self) -> list[dict[str, Any]]:
-        """Poll each enabled inverter and persist a new raw telemetry row."""
+        """Poll each enabled inverter and persist a new raw telemetry row.
+
+        When an adapter returns None (inverter unreachable), no telemetry row
+        is written and the inverter's reachability flag is set to 0. When a
+        real reading succeeds, the flag is set back to 1 so the UI can show
+        normal values again.
+        """
 
         results: list[dict[str, Any]] = []
         with db_session(self.db_path) as conn:
             inverters = fetch_all(conn, "SELECT * FROM inverter_profiles WHERE enabled = 1 ORDER BY id")
             for inverter in inverters:
+                adapter = get_adapter(inverter["adapter_kind"])
                 previous_row = fetch_one(
                     conn,
                     "SELECT * FROM telemetry_raw WHERE inverter_id = ? ORDER BY id DESC LIMIT 1",
                     (inverter["id"],),
                 )
                 previous = self._row_to_reading(previous_row) if previous_row else None
-                adapter = get_adapter(inverter["adapter_kind"])
+
                 reading = adapter.read(inverter, previous)
+                if reading is None:
+                    # Inverter unreachable: record the state and skip telemetry.
+                    conn.execute(
+                        "UPDATE inverter_profiles SET reachable = 0 WHERE id = ?",
+                        (inverter["id"],),
+                    )
+                    results.append({"inverter": inverter, "reading": None})
+                    continue
+
+                # Real reading: mark reachable and persist telemetry.
+                conn.execute(
+                    "UPDATE inverter_profiles SET reachable = 1 WHERE id = ?",
+                    (inverter["id"],),
+                )
                 deltas = reading.deltas_from(previous)
                 conn.execute(
                     """
@@ -222,17 +243,25 @@ class SolarmaxService:
         return results
 
     def latest_live_state(self) -> list[dict[str, Any]]:
+        """Return the most recent telemetry row per inverter with reachability.
+
+        The join against inverter_profiles adds the ``reachable`` flag so the
+        dashboard can tell whether a row is live or stale (inverter currently
+        unreachable).
+        """
+
         with db_session(self.db_path) as conn:
             rows = fetch_all(
                 conn,
                 """
-                SELECT tr.*
+                SELECT tr.*, ip.reachable AS reachable
                 FROM telemetry_raw tr
                 JOIN (
                     SELECT inverter_id, MAX(id) AS max_id
                     FROM telemetry_raw
                     GROUP BY inverter_id
                 ) latest ON latest.max_id = tr.id
+                JOIN inverter_profiles ip ON ip.id = tr.inverter_id
                 ORDER BY tr.inverter_id
                 """,
             )
@@ -372,7 +401,14 @@ class SolarmaxService:
         return rollup_by_day_and_period(detailed)
 
     def dashboard_state(self) -> dict[str, Any]:
-        """Build the dashboard payload consumed by the UI and MCP server."""
+        """Build the dashboard payload consumed by the UI and MCP server.
+
+        Live values are only shown when every enabled inverter is reachable
+        (reachable flag set by the last poll). If any enabled inverter is
+        unreachable, ``live`` is None and ``all_reachable`` is False so the UI
+        can render "—" for every value with an unreachable message. No stale or
+        simulated numbers are ever shown in that state.
+        """
 
         settings = self.load_app_settings()
         with db_session(self.db_path) as conn:
@@ -380,6 +416,19 @@ class SolarmaxService:
             plans = fetch_all(conn, "SELECT * FROM power_plans ORDER BY id")
             bill = self.current_bill_summary()
             live_rows = self.latest_live_state()
+
+        # Determine reachability across all enabled inverters. An inverter is
+        # considered unreachable if its flag says so, or if it has never
+        # produced a telemetry row (no live data at all).
+        enabled = [inv for inv in inverters if int(inv["enabled"])]
+        rows_by_inverter = {row["inverter_id"]: row for row in live_rows}
+        all_reachable = bool(enabled) and all(
+            int(row["reachable"]) == 1 for row in rows_by_inverter.values()
+        ) and all(inv["id"] in rows_by_inverter for inv in enabled)
+
+        if not all_reachable:
+            live = None
+        else:
             totals = {
                 "solar_kw": 0.0,
                 "load_kw": 0.0,
@@ -389,13 +438,18 @@ class SolarmaxService:
                 "battery_discharge_kw": 0.0,
             }
             for row in live_rows:
+                if int(row["reachable"]) != 1:
+                    continue
                 for key in totals:
                     totals[key] += float(row[key])
+            live = totals
+
         return {
             "settings": settings.model_dump(),
             "inverters": inverters,
             "power_plans": plans,
-            "live": totals,
+            "live": live,
+            "all_reachable": all_reachable,
             "bill": bill,
             "theme": settings.theme,
         }

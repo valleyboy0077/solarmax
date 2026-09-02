@@ -69,21 +69,24 @@ def settings_page(request: Request) -> HTMLResponse:
 
 @app.get("/inverters", response_class=HTMLResponse)
 def inverters_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "inverters.html", {"inverters": service.list_inverters()})
+    state = service.dashboard_state()
+    return templates.TemplateResponse(request, "inverters.html", {"state": state, "inverters": service.list_inverters()})
 
 
 @app.get("/plans", response_class=HTMLResponse)
 def plans_page(request: Request) -> HTMLResponse:
+    state = service.dashboard_state()
     plans = service.list_power_plans()
     active = service.load_app_settings().active_plan_id
     tou = {plan["id"]: service.list_tou_periods(plan["id"]) for plan in plans}
-    return templates.TemplateResponse(request, "plans.html", {"plans": plans, "tou_by_plan": tou, "active_plan_id": active})
+    return templates.TemplateResponse(request, "plans.html", {"state": state, "plans": plans, "tou_by_plan": tou, "active_plan_id": active})
 
 
 @app.get("/billing", response_class=HTMLResponse)
 def billing_page(request: Request) -> HTMLResponse:
+    state = service.dashboard_state()
     bill = service.current_bill_summary()
-    return templates.TemplateResponse(request, "billing.html", {"bill": bill})
+    return templates.TemplateResponse(request, "billing.html", {"state": state, "bill": bill})
 
 
 @app.get("/api/state")

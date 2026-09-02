@@ -12,13 +12,20 @@
   </form>
 </section>
 
+{% if not state.all_reachable %}
+<section class="unreachable-banner">
+  <strong>Inverter unreachable</strong> — live values are unavailable until the inverter responds again.
+  Values will return automatically on the next successful poll.
+</section>
+{% endif %}
+
 <section class="grid metrics">
-  <article class="panel metric"><span>Solar generation</span><strong>{{ '%.2f'|format(state.live.solar_kw) }} kW</strong></article>
-  <article class="panel metric"><span>Load use</span><strong>{{ '%.2f'|format(state.live.load_kw) }} kW</strong></article>
-  <article class="panel metric"><span>Grid import</span><strong>{{ '%.2f'|format(state.live.grid_import_kw) }} kW</strong></article>
-  <article class="panel metric"><span>Grid export</span><strong>{{ '%.2f'|format(state.live.grid_export_kw) }} kW</strong></article>
-  <article class="panel metric"><span>Battery charge</span><strong>{{ '%.2f'|format(state.live.battery_charge_kw) }} kW</strong></article>
-  <article class="panel metric"><span>Battery discharge</span><strong>{{ '%.2f'|format(state.live.battery_discharge_kw) }} kW</strong></article>
+  <article class="panel metric"><span>Solar generation</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.solar_kw) }} kW{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Load use</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.load_kw) }} kW{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Grid import</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.grid_import_kw) }} kW{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Grid export</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.grid_export_kw) }} kW{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Battery charge</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.battery_charge_kw) }} kW{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Battery discharge</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.battery_discharge_kw) }} kW{% else %}—{% endif %}</strong></article>
 </section>
 
 <section class="grid dashboard-grid">
@@ -73,6 +80,15 @@
     <p>{{ inverter.model }}</p>
     <p>IP {{ inverter.ip_address or 'not set' }} · Subnet {{ inverter.subnet or 'not set' }}</p>
     <div class="chip-row">
+      {% if inverter.enabled %}
+        {% if inverter.reachable %}
+          <span class="chip chip-ok">Reachable</span>
+        {% else %}
+          <span class="chip chip-warn">Unreachable</span>
+        {% endif %}
+      {% else %}
+        <span class="chip chip-off">Disabled</span>
+      {% endif %}
       <span class="chip">Reserve {{ inverter.battery_reserve_percent }}%</span>
       <span class="chip">Feed-in {{ inverter.battery_feed_in_limit_kw }} kW</span>
       <span class="chip">Export cap {{ inverter.export_limit_kw }} kW</span>

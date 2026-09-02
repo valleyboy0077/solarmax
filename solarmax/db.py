@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS inverter_profiles (
     ip_address TEXT NOT NULL DEFAULT '',
     subnet TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
+    reachable INTEGER NOT NULL DEFAULT 0,
     battery_feed_in_limit_kw REAL NOT NULL DEFAULT 0.0,
     battery_reserve_percent INTEGER NOT NULL DEFAULT 20,
     export_limit_kw REAL NOT NULL DEFAULT 0.0,
@@ -132,8 +133,23 @@ def init_db(path: Path) -> None:
 
     with db_session(path) as conn:
         conn.executescript(SCHEMA)
+        migrate(conn)
         seed_default_settings(conn)
         seed_default_data(conn)
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Apply lightweight schema migrations to older databases.
+
+    Each migration is idempotent: it checks for the column first and only
+    adds it when missing, so re-running init_db is safe.
+    """
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(inverter_profiles)")}
+    if "reachable" not in columns:
+        # Default to 0 (unreachable) so the UI shows "—" until the first
+        # successful poll proves the inverter is reachable.
+        conn.execute("ALTER TABLE inverter_profiles ADD COLUMN reachable INTEGER NOT NULL DEFAULT 0")
 
 
 def seed_default_settings(conn: sqlite3.Connection) -> None:

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from math import sin, pi
-from random import Random
 
 
 @dataclass
@@ -26,7 +24,12 @@ class InverterReading:
     battery_discharge_total_kwh: float
 
     def deltas_from(self, previous: "InverterReading | None") -> dict[str, float]:
-        """Compute energy deltas against the previous total counters."""
+        """Compute energy deltas against the previous total counters.
+
+        Deltas are clamped to >= 0 so a counter reset (e.g. after the app was
+        down and totals were re-baselined) never produces a negative energy
+        value.
+        """
 
         if not previous:
             return {
@@ -48,11 +51,19 @@ class InverterReading:
 
 
 class InverterAdapter:
-    """Base class for future inverter modules."""
+    """Base class for future inverter modules.
+
+    Adapters must return real hardware data only. When the inverter cannot be
+    reached, ``read`` returns None — never fabricated or simulated values. The
+    service layer records the unreachable state and the UI shows "—" for all
+    values until a real reading succeeds again.
+    """
 
     kind = "base"
 
-    def read(self, profile: dict, previous: InverterReading | None) -> InverterReading:
+    def read(self, profile: dict, previous: InverterReading | None) -> InverterReading | None:
+        """Return a real reading, or None when the inverter is unreachable."""
+
         raise NotImplementedError
 
     def apply_profile(self, profile: dict, updates: dict) -> dict:
@@ -61,59 +72,3 @@ class InverterAdapter:
         merged = dict(profile)
         merged.update(updates)
         return merged
-
-
-class SimulatedPowerCurve:
-    """Deterministic signal generator that gives the UI realistic movement."""
-
-    def __init__(self, inverter_id: int):
-        self.rng = Random(inverter_id * 982451653)
-        self.phase = self.rng.random() * 2 * pi
-
-    def reading(self, profile: dict, previous: InverterReading | None) -> InverterReading:
-        now = datetime.now(timezone.utc)
-        minute_of_day = now.hour * 60 + now.minute + now.second / 60.0
-        solar_shape = max(0.0, sin(((minute_of_day - 360) / 720.0) * pi))
-        solar_kw = round(0.2 + solar_shape * 8.5 + self.rng.uniform(-0.2, 0.2), 3)
-        load_kw = round(1.5 + 1.2 * sin(((minute_of_day - 180) / 1440.0) * 2 * pi) + self.rng.uniform(0.0, 0.8), 3)
-        battery_charge_kw = round(max(0.0, solar_kw - load_kw - self.rng.uniform(0.0, 0.3)), 3)
-        battery_discharge_kw = round(max(0.0, load_kw - solar_kw - self.rng.uniform(0.0, 0.3)), 3)
-        grid_import_kw = round(max(0.0, load_kw - solar_kw - battery_discharge_kw), 3)
-        grid_export_kw = round(max(0.0, solar_kw - load_kw - battery_charge_kw), 3)
-        last = previous or InverterReading(
-            captured_at=now,
-            solar_kw=0.0,
-            load_kw=0.0,
-            grid_import_kw=0.0,
-            grid_export_kw=0.0,
-            battery_charge_kw=0.0,
-            battery_discharge_kw=0.0,
-            solar_total_kwh=0.0,
-            load_total_kwh=0.0,
-            grid_import_total_kwh=0.0,
-            grid_export_total_kwh=0.0,
-            battery_charge_total_kwh=0.0,
-            battery_discharge_total_kwh=0.0,
-        )
-        step_hours = 30.0 / 3600.0
-        solar_total_kwh = round(last.solar_total_kwh + solar_kw * step_hours, 5)
-        load_total_kwh = round(last.load_total_kwh + load_kw * step_hours, 5)
-        grid_import_total_kwh = round(last.grid_import_total_kwh + grid_import_kw * step_hours, 5)
-        grid_export_total_kwh = round(last.grid_export_total_kwh + grid_export_kw * step_hours, 5)
-        battery_charge_total_kwh = round(last.battery_charge_total_kwh + battery_charge_kw * step_hours, 5)
-        battery_discharge_total_kwh = round(last.battery_discharge_total_kwh + battery_discharge_kw * step_hours, 5)
-        return InverterReading(
-            captured_at=now,
-            solar_kw=solar_kw,
-            load_kw=load_kw,
-            grid_import_kw=grid_import_kw,
-            grid_export_kw=grid_export_kw,
-            battery_charge_kw=battery_charge_kw,
-            battery_discharge_kw=battery_discharge_kw,
-            solar_total_kwh=solar_total_kwh,
-            load_total_kwh=load_total_kwh,
-            grid_import_total_kwh=grid_import_total_kwh,
-            grid_export_total_kwh=grid_export_total_kwh,
-            battery_charge_total_kwh=battery_charge_total_kwh,
-            battery_discharge_total_kwh=battery_discharge_total_kwh,
-        )

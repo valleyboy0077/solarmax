@@ -52,5 +52,5 @@ For Hermes, wire it as a stdio MCP server in `~/.hermes/config.yaml` once you ha
 
 ## Notes
 
-- The first version uses a simulator-backed SigenStor adapter so the UI is usable without physical hardware.
+- The first version reads live telemetry from the SigenStor over Modbus TCP. When the inverter is unreachable, all live values show "—" until it responds again — no simulated data is ever shown.
 - The inverter profile/module design is intentionally pluggable so future inverter models can be added as separate modules.

@@ -10,6 +10,11 @@ ADAPTERS: dict[str, InverterAdapter] = {
 
 
 def get_adapter(kind: str) -> InverterAdapter:
-    """Return an adapter instance by profile kind, falling back to simulation."""
+    """Return an adapter instance by profile kind.
+
+    Unknown kinds fall back to the SigenStor adapter (the first-version
+    default). Adapters return real hardware data only, or None when the
+    inverter is unreachable — never simulated values.
+    """
 
     return ADAPTERS.get(kind, ADAPTERS[SigenStorEC20TPAUAdapter.kind])
