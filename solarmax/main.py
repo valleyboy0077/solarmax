@@ -168,6 +168,11 @@ def api_bill() -> JSONResponse:
     return JSONResponse(service.current_bill_summary())
 
 
+@app.post("/api/close-day")
+def api_close_day() -> JSONResponse:
+    return JSONResponse(service.close_day())
+
+
 @app.post("/api/settings")
 def api_settings(
     theme: str = Form(...),

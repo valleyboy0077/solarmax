@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS daily_counters (
     grid_export_baseline_kwh REAL NOT NULL,
     battery_charge_baseline_kwh REAL NOT NULL,
     battery_discharge_baseline_kwh REAL NOT NULL,
+    solar_source TEXT NOT NULL DEFAULT 'legacy',
+    load_source TEXT NOT NULL DEFAULT 'legacy',
+    grid_import_source TEXT NOT NULL DEFAULT 'legacy',
+    grid_export_source TEXT NOT NULL DEFAULT 'legacy',
+    battery_charge_source TEXT NOT NULL DEFAULT 'legacy',
+    battery_discharge_source TEXT NOT NULL DEFAULT 'legacy',
     FOREIGN KEY(inverter_id) REFERENCES inverter_profiles(id) ON DELETE CASCADE,
     UNIQUE(inverter_id, day)
 );
@@ -174,6 +180,16 @@ def migrate(conn: sqlite3.Connection) -> None:
     telemetry_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_raw)")}
     if "lifetime" not in telemetry_columns:
         conn.execute("ALTER TABLE telemetry_raw ADD COLUMN lifetime INTEGER NOT NULL DEFAULT 0")
+    daily_counter_columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_counters)")}
+    for key in (
+        "solar", "load", "grid_import", "grid_export",
+        "battery_charge", "battery_discharge",
+    ):
+        column = f"{key}_source"
+        if column not in daily_counter_columns:
+            # Existing baselines used midnight lifetime values. Preserve their
+            # accumulated kWh and re-baseline on the next successful poll.
+            conn.execute(f"ALTER TABLE daily_counters ADD COLUMN {column} TEXT NOT NULL DEFAULT 'legacy'")
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(power_plans)")}
     if "daily_supply_charge_cents" not in plan_columns:
         conn.execute("ALTER TABLE power_plans ADD COLUMN daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0")

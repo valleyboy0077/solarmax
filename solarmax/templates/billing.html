@@ -4,7 +4,7 @@
 <section class="panel form-panel">
   <div class="panel-head"><div><div class="eyebrow">Current bill</div><h2>Bill breakdown by day and TOU period</h2></div></div>
   <p class="bill-total">Total: ${{ '%.2f'|format((bill.total_cents / 100.0) if bill.total_cents else 0) }}</p>
-  <p>Grid export today: {{ '%.3f'|format(bill.today_grid_export_kwh or 0) }} kWh</p>
+  <p>Grid today: {{ '%.3f'|format(bill.today_grid_import_kwh or 0) }} kWh imported · {{ '%.3f'|format(bill.today_grid_export_kwh or 0) }} kWh exported</p>
   <p>Daily supply charge: ${{ '%.2f'|format((bill.supply_charge_cents / 100.0) if bill.supply_charge_cents else 0) }} × {{ bill.supply_charge_days }} day{{ '' if bill.supply_charge_days == 1 else 's' }}</p>
   <table>
     <thead><tr><th>Day</th><th>Period</th><th>Direction</th><th>kWh</th><th>Rate</th><th>Amount</th></tr></thead>
@@ -15,8 +15,8 @@
         <td>{{ row.period_label }}</td>
         <td>{{ row.direction }}</td>
         <td>{{ '%.3f'|format(row.kwh) }}</td>
-        <td>{{ '%.2f'|format(row.rate_cents_per_kwh) }}c</td>
-        <td>{{ '%.2f'|format(row.amount_cents / 100.0) }}</td>
+        <td>{% if row.rate_cents_per_kwh is not none %}{{ '%.2f'|format(row.rate_cents_per_kwh) }}c{% else %}—{% endif %}</td>
+        <td>{% if row.amount_cents is not none %}{{ '%.2f'|format(row.amount_cents / 100.0) }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

@@ -1,7 +1,7 @@
 """Inverter adapter interface and shared helpers."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 
@@ -22,10 +22,15 @@ class InverterReading:
     grid_export_total_kwh: float
     battery_charge_total_kwh: float
     battery_discharge_total_kwh: float
-    # Whether total counters originate from inverter lifetime registers rather
-    # than an adapter-derived estimate.  Persisted with every raw row so a
-    # change of source can never create a nonsensical delta.
+    # Whether the six ``*_total_kwh`` values originate from inverter lifetime
+    # registers rather than an adapter-derived session counter. Persisted with
+    # every raw row so a change of source cannot create a nonsensical delta.
     lifetime: bool = False
+    # Optional, device-reported local-day registers keyed by the normalized
+    # metric name (for example ``solar`` or ``battery_charge``). They coexist
+    # with lifetime totals: direct daily registers are preferred for the
+    # dashboard, while lifetime totals remain the persisted billing source.
+    daily_totals_kwh: dict[str, float] = field(default_factory=dict)
 
     def deltas_from(self, previous: "InverterReading | None") -> dict[str, float]:
         """Compute energy deltas against the previous total counters.

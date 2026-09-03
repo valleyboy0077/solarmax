@@ -28,6 +28,15 @@
   <article class="panel metric"><span>Battery discharge</span><strong>{% if state.live %}{{ '%.2f'|format(state.live.battery_discharge_kw) }} kW{% else %}—{% endif %}</strong></article>
 </section>
 
+<section class="grid metrics total-metrics">
+  <article class="panel metric"><span>Solar generation today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.solar_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Load use today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.load_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Grid import today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.grid_import_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Grid export today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.grid_export_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Battery charge today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.battery_charge_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+  <article class="panel metric"><span>Battery discharge today</span><strong>{% if state.totals %}{{ '%.2f'|format(state.totals.battery_discharge_total_kwh) }} kWh{% else %}—{% endif %}</strong></article>
+</section>
+
 <section class="grid dashboard-grid">
   <article class="panel chart-panel">
     <div class="panel-head">
@@ -57,8 +66,8 @@
             <td>{{ row.period_label }}</td>
             <td>{{ row.direction }}</td>
             <td>{{ '%.3f'|format(row.kwh) }}</td>
-            <td>{{ '%.2f'|format(row.rate_cents_per_kwh) }}c</td>
-            <td>{{ '%.2f'|format(row.amount_cents / 100.0) }}</td>
+            <td>{% if row.rate_cents_per_kwh is not none %}{{ '%.2f'|format(row.rate_cents_per_kwh) }}c{% else %}—{% endif %}</td>
+            <td>{% if row.amount_cents is not none %}{{ '%.2f'|format(row.amount_cents / 100.0) }}{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

@@ -104,6 +104,7 @@ body {
 .hero-card { padding: 1.5rem; display: flex; justify-content: space-between; gap: 1rem; align-items: center; margin-bottom: 1rem; }
 .grid { display: grid; gap: 1rem; }
 .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 1rem; }
+.total-metrics .metric strong { font-size: 1.35rem; }
 .metric { padding: 1rem; min-height: 108px; display: flex; flex-direction: column; justify-content: space-between; }
 .metric span, .info-stack p { color: var(--muted); margin: 0; }
 .metric strong { font-size: 1.6rem; }

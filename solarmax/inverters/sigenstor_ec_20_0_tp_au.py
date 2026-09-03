@@ -25,6 +25,7 @@ from .base import InverterAdapter, InverterReading
 from .modbus import (
     ModbusError,
     decode_s32,
+    decode_u32,
     decode_u64,
     read_input_registers,
 )
@@ -55,6 +56,17 @@ _LIFETIME_READS = [
     (30220, "grid_export_total_kwh"),
     (30200, "battery_charge_total_kwh"),
     (30204, "battery_discharge_total_kwh"),
+]
+
+# Direct local-day registers are more useful than a newly-created lifetime
+# baseline for the four metrics the device publishes this way. Grid import and
+# export have no equivalent direct-day register, so those remain local-midnight
+# deltas of the lifetime counters.
+_DAILY_READS = [
+    (PLANT_UNIT_ID, 30272, "solar"),
+    (PLANT_UNIT_ID, 30092, "load"),
+    (1, 30566, "battery_charge"),
+    (1, 30572, "battery_discharge"),
 ]
 
 # Battery SOC and EMS mode are read for logging / future use but not stored in
@@ -93,7 +105,7 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
             return None
 
     def _read_real(self, ip_address: str, previous: InverterReading | None) -> InverterReading:
-        """Read instantaneous power and authoritative lifetime totals."""
+        """Read live power, lifetime totals, and available daily registers."""
 
         # Read each instantaneous power register. Each is a signed 32-bit value
         # spanning two registers, scaled by /1000 to kW.
@@ -107,6 +119,21 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
             totals_kwh[key] = decode_u64(
                 read_input_registers(ip_address, PLANT_UNIT_ID, address, 4)
             ) / 100.0
+
+        daily_totals_kwh: dict[str, float] = {}
+        for unit_id, address, key in _DAILY_READS:
+            try:
+                daily_totals_kwh[key] = decode_u32(
+                    read_input_registers(ip_address, unit_id, address, 2)
+                ) / 100.0
+            except ModbusError as exc:
+                # A firmware/register-map difference must not make otherwise
+                # valid live and lifetime telemetry disappear. The service
+                # falls back to the matching persisted counter source.
+                logger.info(
+                    "SigenStor %s daily %s register unavailable: %s",
+                    ip_address, key, exc,
+                )
 
         # Read SOC and EMS mode for logging (not stored in the reading yet).
         try:
@@ -140,4 +167,5 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
             battery_discharge_kw=round(battery_discharge_kw, 3),
             **totals_kwh,
             lifetime=True,
+            daily_totals_kwh=daily_totals_kwh,
         )
