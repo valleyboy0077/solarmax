@@ -119,7 +119,7 @@ class SolarmaxService:
                 conn.execute(
                     """
                     UPDATE power_plans
-                    SET provider_name=?, plan_name=?, billing_cycle=?, billing_start_day=?, billing_start_month=?, notes=?
+                    SET provider_name=?, plan_name=?, billing_cycle=?, billing_start_day=?, billing_start_month=?, daily_supply_charge_cents=?, notes=?
                     WHERE id=?
                     """,
                     (
@@ -128,6 +128,7 @@ class SolarmaxService:
                         plan.billing_cycle,
                         plan.billing_start_day,
                         plan.billing_start_month,
+                        plan.daily_supply_charge_cents,
                         plan.notes,
                         plan.id,
                     ),
@@ -136,8 +137,8 @@ class SolarmaxService:
             cur = conn.execute(
                 """
                 INSERT INTO power_plans
-                (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, daily_supply_charge_cents, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan.provider_name,
@@ -145,10 +146,24 @@ class SolarmaxService:
                     plan.billing_cycle,
                     plan.billing_start_day,
                     plan.billing_start_month,
+                    plan.daily_supply_charge_cents,
                     plan.notes,
                 ),
             )
             return int(cur.lastrowid)
+
+    def update_daily_supply_charge(self, plan_id: int, cents: float) -> None:
+        """Update only the fixed daily charge for an existing plan."""
+        validated = PowerPlan(
+            provider_name="Existing plan",
+            plan_name="Existing plan",
+            daily_supply_charge_cents=cents,
+        )
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE power_plans SET daily_supply_charge_cents = ? WHERE id = ?",
+                (validated.daily_supply_charge_cents, plan_id),
+            )
 
     def list_tou_periods(self, plan_id: int) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
@@ -359,7 +374,13 @@ class SolarmaxService:
             settings = get_settings(conn)
             plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
             if not plan_id:
-                return {"total_cents": 0.0, "lines": [], "rollups": []}
+                return {
+                    "total_cents": 0.0,
+                    "rows": [],
+                    "daily": [],
+                    "supply_charge_cents": 0.0,
+                    "supply_charge_days": 0,
+                }
             plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
             site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
@@ -378,6 +399,16 @@ class SolarmaxService:
             )
             detailed.extend(self._current_live_lines(conn, periods, site_timezone))
             grouped = rollup_by_day_and_period(detailed, site_timezone)
+            supply_charge_cents = float(plan.get("daily_supply_charge_cents", 0.0) or 0.0)
+            supply_days = sorted({row["day"] for row in grouped})
+            grouped.extend({
+                "day": day,
+                "period_label": "Daily supply charge",
+                "direction": "fixed",
+                "kwh": 0.0,
+                "rate_cents_per_kwh": 0.0,
+                "amount_cents": round(supply_charge_cents, 3),
+            } for day in supply_days)
             total = sum(float(row["amount_cents"]) for row in grouped)
             daily = self.daily_bill_breakdown(conn, plan_id, site_timezone)
             return {
@@ -385,6 +416,8 @@ class SolarmaxService:
                 "total_cents": round(total, 2),
                 "rows": grouped,
                 "daily": daily,
+                "supply_charge_cents": supply_charge_cents,
+                "supply_charge_days": len(supply_days),
             }
 
     def daily_bill_breakdown(self, conn: sqlite3.Connection, plan_id: int, site_timezone: str | None = None) -> list[dict[str, Any]]:
@@ -468,10 +501,18 @@ class SolarmaxService:
         with db_session(self.db_path) as conn:
             site_timezone = self._valid_timezone(get_settings(conn).get("site_timezone", "Australia/Brisbane"))
             rows = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
+            settings = get_settings(conn)
+            plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
+            supply_charge_cents = 0.0
+            if plan_id:
+                plan = fetch_one(conn, "SELECT daily_supply_charge_cents FROM power_plans WHERE id = ?", (plan_id,))
+                supply_charge_cents = float((plan or {}).get("daily_supply_charge_cents", 0.0) or 0.0)
             grouped: dict[str, float] = {}
             for row in rows:
                 day = datetime.fromisoformat(row["bucket_start"]).astimezone(ZoneInfo(site_timezone)).date().isoformat()
                 grouped[day] = grouped.get(day, 0.0) + float(row["amount_cents"])
+            for day in grouped:
+                grouped[day] += supply_charge_cents
         items = sorted(grouped.items())[-days:]
         return [{"day": day, "amount_cents": round(amount, 2)} for day, amount in items]
 
