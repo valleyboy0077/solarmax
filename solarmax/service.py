@@ -16,6 +16,9 @@ from .inverters.registry import get_adapter
 from .models import AppSettings, InverterProfile, PowerPlan, TouPeriod
 from .weather import WeatherSummary, fetch_open_meteo, recommend_battery_policy
 
+SUPPORTED_THEMES = {"classic-light", "classic-dark", "deep-ocean", "ember-core"}
+RETIRED_THEMES = {"solar-glass", "midnight-neon", "warm-desert"}
+
 
 class SolarmaxService:
     """Coordinates persistence, polling, billing, and AI helpers."""
@@ -31,8 +34,13 @@ class SolarmaxService:
     def load_app_settings(self) -> AppSettings:
         with db_session(self.db_path) as conn:
             raw = get_settings(conn)
+        theme = raw.get("theme", "classic-dark")
+        # Existing installations may still have one of the retired themes in
+        # SQLite. Normalize before Pydantic validates the new ThemeName literal.
+        if theme in RETIRED_THEMES or theme not in SUPPORTED_THEMES:
+            theme = "classic-dark"
         return AppSettings(
-            theme=raw.get("theme", "classic-dark"),
+            theme=theme,
             mode=raw.get("mode", "manual"),
             poll_interval_seconds=int(raw.get("poll_interval_seconds", "30")),
             site_name=raw.get("site_name", "Solarmax"),

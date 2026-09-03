@@ -11,9 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 ThemeName = Literal[
     "classic-light",
     "classic-dark",
-    "solar-glass",
-    "midnight-neon",
-    "warm-desert",
+    "deep-ocean",
+    "ember-core",
 ]
 
 ModeName = Literal["manual", "ai"]

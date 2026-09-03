@@ -1,5 +1,7 @@
 :root {
   --bg: #0d1117;
+  --field-bg: #171f2e;
+  --field-bg-hover: #202b3f;
   --panel: rgba(18, 24, 38, 0.85);
   --panel-2: rgba(25, 33, 52, 0.88);
   --border: rgba(255,255,255,0.08);
@@ -12,7 +14,10 @@
 }
 
 html[data-theme='classic-light'] {
+  color-scheme: light;
   --bg: #f2f5fb;
+  --field-bg: #ffffff;
+  --field-bg-hover: #eef3ff;
   --panel: rgba(255,255,255,0.86);
   --panel-2: rgba(246,248,255,0.92);
   --border: rgba(17,24,39,0.08);
@@ -23,31 +28,46 @@ html[data-theme='classic-light'] {
 }
 
 html[data-theme='classic-dark'] {
+  color-scheme: dark;
   --bg: #0d1117;
+  --field-bg: #171f2e;
+  --field-bg-hover: #202b3f;
 }
 
-html[data-theme='solar-glass'] {
-  --bg: radial-gradient(circle at top left, #2d1f4d, #0c1020 52%, #05070d 100%);
-  --panel: rgba(18, 21, 35, 0.72);
-  --panel-2: rgba(24, 28, 45, 0.8);
-  --accent: #ffd166;
-  --accent-2: #60efff;
+html[data-theme='deep-ocean'] {
+  color-scheme: dark;
+  --bg: radial-gradient(circle at 12% 8%, rgba(26, 151, 190, 0.27), transparent 28%),
+        radial-gradient(circle at 86% 92%, rgba(4, 83, 109, 0.38), transparent 34%),
+        repeating-linear-gradient(135deg, rgba(92, 224, 255, 0.035) 0 1px, transparent 1px 12px),
+        #031923;
+  --field-bg: #0a2b39;
+  --field-bg-hover: #103b4c;
+  --panel: rgba(5, 38, 51, 0.91);
+  --panel-2: rgba(7, 49, 65, 0.94);
+  --border: rgba(123, 225, 246, 0.2);
+  --text: #e4f9ff;
+  --muted: #a4cbd6;
+  --accent: #5cddff;
+  --accent-2: #65f0c0;
+  --shadow: 0 18px 60px rgba(0, 13, 20, 0.55);
 }
 
-html[data-theme='midnight-neon'] {
-  --bg: radial-gradient(circle at top, #09111f, #05070d 70%);
-  --panel: rgba(10, 17, 33, 0.88);
-  --panel-2: rgba(15, 22, 42, 0.92);
-  --accent: #ff4ecd;
-  --accent-2: #44f7c3;
-}
-
-html[data-theme='warm-desert'] {
-  --bg: radial-gradient(circle at top, #4a2d21, #211510 72%);
-  --panel: rgba(52, 35, 28, 0.82);
-  --panel-2: rgba(68, 47, 38, 0.9);
-  --accent: #ffca80;
-  --accent-2: #ffd98a;
+html[data-theme='ember-core'] {
+  color-scheme: dark;
+  --bg: radial-gradient(ellipse at 20% 0%, rgba(191, 77, 22, 0.3), transparent 33%),
+        radial-gradient(ellipse at 84% 94%, rgba(114, 39, 10, 0.38), transparent 36%),
+        repeating-linear-gradient(0deg, rgba(255, 190, 121, 0.035) 0 1px, transparent 1px 11px),
+        #24130d;
+  --field-bg: #422316;
+  --field-bg-hover: #55301d;
+  --panel: rgba(54, 28, 18, 0.92);
+  --panel-2: rgba(76, 39, 22, 0.95);
+  --border: rgba(255, 196, 126, 0.22);
+  --text: #fff3e5;
+  --muted: #e1c0a1;
+  --accent: #ffb04d;
+  --accent-2: #ffcf70;
+  --shadow: 0 18px 60px rgba(34, 12, 4, 0.58);
 }
 
 * { box-sizing: border-box; }
@@ -114,10 +134,14 @@ th, td { text-align: left; padding: 0.6rem 0.4rem; border-bottom: 1px solid var(
   width: 100%;
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.05);
+  background: var(--field-bg);
   color: var(--text);
   padding: 0.7rem 0.9rem;
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
 }
+.stack-form input:hover, .stack-form select:hover, .stack-form textarea:hover { background: var(--field-bg-hover); border-color: var(--accent); }
+.stack-form input:focus, .stack-form select:focus, .stack-form textarea:focus { outline: none; background: var(--field-bg-hover); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
+.stack-form select option { background: var(--field-bg); color: var(--text); }
 .inset-form { padding: 1rem; border: 1px dashed var(--border); border-radius: 20px; background: rgba(255,255,255,0.03); margin-bottom: 1rem; }
 .bill-total { font-size: 2rem; font-weight: 800; }
 .linkish { display: inline; padding: 0; border: none; box-shadow: none; background: transparent; color: var(--accent); }

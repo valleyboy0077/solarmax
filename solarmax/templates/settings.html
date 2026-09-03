@@ -6,7 +6,7 @@
   <form action="/api/settings" method="post" class="stack-form">
     <label>Theme
       <select name="theme">
-        {% for option in ['classic-light','classic-dark','solar-glass','midnight-neon','warm-desert'] %}
+        {% for option in ['classic-light','classic-dark','deep-ocean','ember-core'] %}
         <option value="{{ option }}" {% if state.settings.theme == option %}selected{% endif %}>{{ option }}</option>
         {% endfor %}
       </select>
