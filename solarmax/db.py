@@ -77,7 +77,27 @@ CREATE TABLE IF NOT EXISTS telemetry_raw (
     delta_grid_export_kwh REAL NOT NULL,
     delta_battery_charge_kwh REAL NOT NULL,
     delta_battery_discharge_kwh REAL NOT NULL,
+    lifetime INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(inverter_id) REFERENCES inverter_profiles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS daily_counters (
+    inverter_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    solar_kwh REAL NOT NULL DEFAULT 0.0,
+    load_kwh REAL NOT NULL DEFAULT 0.0,
+    grid_import_kwh REAL NOT NULL DEFAULT 0.0,
+    grid_export_kwh REAL NOT NULL DEFAULT 0.0,
+    battery_charge_kwh REAL NOT NULL DEFAULT 0.0,
+    battery_discharge_kwh REAL NOT NULL DEFAULT 0.0,
+    solar_baseline_kwh REAL NOT NULL,
+    load_baseline_kwh REAL NOT NULL,
+    grid_import_baseline_kwh REAL NOT NULL,
+    grid_export_baseline_kwh REAL NOT NULL,
+    battery_charge_baseline_kwh REAL NOT NULL,
+    battery_discharge_baseline_kwh REAL NOT NULL,
+    FOREIGN KEY(inverter_id) REFERENCES inverter_profiles(id) ON DELETE CASCADE,
+    UNIQUE(inverter_id, day)
 );
 
 CREATE TABLE IF NOT EXISTS telemetry_rollups (
@@ -150,6 +170,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         # Default to 0 (unreachable) so the UI shows "—" until the first
         # successful poll proves the inverter is reachable.
         conn.execute("ALTER TABLE inverter_profiles ADD COLUMN reachable INTEGER NOT NULL DEFAULT 0")
+    telemetry_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_raw)")}
+    if "lifetime" not in telemetry_columns:
+        conn.execute("ALTER TABLE telemetry_raw ADD COLUMN lifetime INTEGER NOT NULL DEFAULT 0")
 
 
 def seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -162,6 +185,7 @@ def seed_default_settings(conn: sqlite3.Connection) -> None:
         "site_name": "Solarmax",
         "site_lat": str(DEFAULT_SITE_LAT),
         "site_lon": str(DEFAULT_SITE_LON),
+        "site_timezone": "Australia/Brisbane",
     }
     for key, value in defaults.items():
         conn.execute(
@@ -229,26 +253,19 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
             ],
         )
 
-    rollup_count = conn.execute("SELECT COUNT(*) FROM telemetry_rollups").fetchone()[0]
-    if rollup_count == 0:
-        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        demo_rows = []
-        for day_offset in range(7, 0, -1):
-            day = (now - timedelta(days=day_offset)).date()
-            demo_rows.extend([
-                (1, datetime(day.year, day.month, day.day, 6, 0, tzinfo=timezone.utc).isoformat(), datetime(day.year, day.month, day.day, 6, 30, tzinfo=timezone.utc).isoformat(), 0.2, 0.0, 0.18, 0.0, 0.0, 0.0, 0.0),
-                (1, datetime(day.year, day.month, day.day, 13, 0, tzinfo=timezone.utc).isoformat(), datetime(day.year, day.month, day.day, 13, 30, tzinfo=timezone.utc).isoformat(), 0.3, 1.4, 0.05, 0.0, 0.0, 0.0, 0.0),
-                (1, datetime(day.year, day.month, day.day, 18, 0, tzinfo=timezone.utc).isoformat(), datetime(day.year, day.month, day.day, 18, 30, tzinfo=timezone.utc).isoformat(), 0.0, 3.8, 0.0, 0.05, 0.0, 0.0, 0.0),
-                (1, datetime(day.year, day.month, day.day, 11, 30, tzinfo=timezone.utc).isoformat(), datetime(day.year, day.month, day.day, 12, 0, tzinfo=timezone.utc).isoformat(), 0.0, 0.0, 0.0, 5.2, 0.0, 0.0, 0.0),
-            ])
-        conn.executemany(
-            """
-            INSERT INTO telemetry_rollups
-            (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, amount_cents)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            demo_rows,
-        )
+    # Remove the original fixed demo pattern even in existing databases.  Its
+    # energy was fabricated and must never contribute to a real bill.
+    conn.execute(
+        """
+        DELETE FROM telemetry_rollups
+        WHERE inverter_id = 1
+          AND (grid_import_kwh = 0.18 OR grid_import_kwh = 0.05 OR grid_export_kwh IN (0.05, 5.2))
+          AND ((grid_import_kwh = 0.18 AND solar_kwh = 0.2 AND load_kwh = 0.0)
+            OR (grid_import_kwh = 0.05 AND solar_kwh = 0.3 AND load_kwh = 1.4)
+            OR (grid_export_kwh = 0.05 AND solar_kwh = 0.0 AND load_kwh = 3.8)
+            OR (grid_export_kwh = 5.2 AND solar_kwh = 0.0 AND load_kwh = 0.0))
+        """
+    )
 
 
 def get_settings(conn: sqlite3.Connection) -> dict[str, str]:

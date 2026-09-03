@@ -22,6 +22,10 @@ class InverterReading:
     grid_export_total_kwh: float
     battery_charge_total_kwh: float
     battery_discharge_total_kwh: float
+    # Whether total counters originate from inverter lifetime registers rather
+    # than an adapter-derived estimate.  Persisted with every raw row so a
+    # change of source can never create a nonsensical delta.
+    lifetime: bool = False
 
     def deltas_from(self, previous: "InverterReading | None") -> dict[str, float]:
         """Compute energy deltas against the previous total counters.

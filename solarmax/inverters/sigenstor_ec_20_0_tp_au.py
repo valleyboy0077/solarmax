@@ -8,11 +8,9 @@ unreachable it returns None so the UI can show "—" and an unreachable message.
 Design notes:
 - Live instantaneous kW is read straight from the inverter, so the dashboard
   shows real values (e.g. zero solar at night).
-- Cumulative kWh totals are integrated from the instantaneous power over the
-  elapsed time since the previous reading. This is robust because the
-  Sigenergy lifetime U64 counters are not populated on this hardware, while
-  integrating kW over time is accurate at a 30-second poll interval and keeps
-  the existing delta-from-totals logic working unchanged.
+- Cumulative kWh totals come from the live Sigenergy lifetime U64 counters.
+  They are authoritative on this hardware and avoid the drift inherent in
+  integrating instantaneous power between polls.
 - If no IP is configured, or a Modbus read fails (inverter offline), the
   adapter returns None. The service records the unreachable state and the UI
   shows "—" for all values until a real reading succeeds again. No simulated
@@ -27,6 +25,7 @@ from .base import InverterAdapter, InverterReading
 from .modbus import (
     ModbusError,
     decode_s32,
+    decode_u64,
     read_input_registers,
 )
 
@@ -45,6 +44,17 @@ _POWER_READS = [
     (30284, "load_kw"),         # plant_total_load_power
     (30005, "grid_kw"),         # plant_grid_sensor_active_power (signed)
     (30037, "battery_kw"),      # plant_ess_power (signed)
+]
+
+# (register address, normalized total key).  All counters are U64, four
+# big-endian registers, with a /100 gain to kWh.
+_LIFETIME_READS = [
+    (30088, "solar_total_kwh"),
+    (30094, "load_total_kwh"),
+    (30216, "grid_import_total_kwh"),
+    (30220, "grid_export_total_kwh"),
+    (30200, "battery_charge_total_kwh"),
+    (30204, "battery_discharge_total_kwh"),
 ]
 
 # Battery SOC and EMS mode are read for logging / future use but not stored in
@@ -83,7 +93,7 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
             return None
 
     def _read_real(self, ip_address: str, previous: InverterReading | None) -> InverterReading:
-        """Read instantaneous power from the inverter and integrate totals."""
+        """Read instantaneous power and authoritative lifetime totals."""
 
         # Read each instantaneous power register. Each is a signed 32-bit value
         # spanning two registers, scaled by /1000 to kW.
@@ -91,6 +101,12 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
         for address, key in _POWER_READS:
             regs = read_input_registers(ip_address, PLANT_UNIT_ID, address, 2)
             power_kw[key] = decode_s32(regs) / 1000.0
+
+        totals_kwh: dict[str, float] = {}
+        for address, key in _LIFETIME_READS:
+            totals_kwh[key] = decode_u64(
+                read_input_registers(ip_address, PLANT_UNIT_ID, address, 4)
+            ) / 100.0
 
         # Read SOC and EMS mode for logging (not stored in the reading yet).
         try:
@@ -114,52 +130,14 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
         battery_charge_kw = max(0.0, battery_kw)    # > 0 means charging
         battery_discharge_kw = max(0.0, -battery_kw)  # < 0 means discharging
 
-        now = datetime.now(timezone.utc)
-        last = previous or InverterReading(
-            captured_at=now,
-            solar_kw=0.0, load_kw=0.0, grid_import_kw=0.0, grid_export_kw=0.0,
-            battery_charge_kw=0.0, battery_discharge_kw=0.0,
-            solar_total_kwh=0.0, load_total_kwh=0.0, grid_import_total_kwh=0.0,
-            grid_export_total_kwh=0.0, battery_charge_total_kwh=0.0,
-            battery_discharge_total_kwh=0.0,
-        )
-
-        # Elapsed time since the previous reading. If the gap is large (the app
-        # was down, or this is the first reading after a long pause), we cannot
-        # trust integrating over that whole span, so we re-baseline the running
-        # totals to zero and start fresh. A small gap (normal polling) is
-        # integrated as usual. The threshold sits well above the 30-second poll
-        # interval so normal operation never triggers a reset.
-        elapsed_seconds = (now - last.captured_at).total_seconds()
-        if elapsed_seconds > 300.0:  # > 5 minutes -> treat as a fresh start
-            hours = elapsed_seconds / 3600.0
-            solar_total_kwh = round(power_kw["solar_kw"] * hours, 5)
-            load_total_kwh = round(power_kw["load_kw"] * hours, 5)
-            grid_import_total_kwh = round(grid_import_kw * hours, 5)
-            grid_export_total_kwh = round(grid_export_kw * hours, 5)
-            battery_charge_total_kwh = round(battery_charge_kw * hours, 5)
-            battery_discharge_total_kwh = round(battery_discharge_kw * hours, 5)
-        else:
-            elapsed_hours = max(0.0, min(elapsed_seconds / 3600.0, 1.0))
-            solar_total_kwh = round(last.solar_total_kwh + power_kw["solar_kw"] * elapsed_hours, 5)
-            load_total_kwh = round(last.load_total_kwh + power_kw["load_kw"] * elapsed_hours, 5)
-            grid_import_total_kwh = round(last.grid_import_total_kwh + grid_import_kw * elapsed_hours, 5)
-            grid_export_total_kwh = round(last.grid_export_total_kwh + grid_export_kw * elapsed_hours, 5)
-            battery_charge_total_kwh = round(last.battery_charge_total_kwh + battery_charge_kw * elapsed_hours, 5)
-            battery_discharge_total_kwh = round(last.battery_discharge_total_kwh + battery_discharge_kw * elapsed_hours, 5)
-
         return InverterReading(
-            captured_at=now,
+            captured_at=datetime.now(timezone.utc),
             solar_kw=round(power_kw["solar_kw"], 3),
             load_kw=round(power_kw["load_kw"], 3),
             grid_import_kw=round(grid_import_kw, 3),
             grid_export_kw=round(grid_export_kw, 3),
             battery_charge_kw=round(battery_charge_kw, 3),
             battery_discharge_kw=round(battery_discharge_kw, 3),
-            solar_total_kwh=solar_total_kwh,
-            load_total_kwh=load_total_kwh,
-            grid_import_total_kwh=grid_import_total_kwh,
-            grid_export_total_kwh=grid_export_total_kwh,
-            battery_charge_total_kwh=battery_charge_total_kwh,
-            battery_discharge_total_kwh=battery_discharge_total_kwh,
+            **totals_kwh,
+            lifetime=True,
         )

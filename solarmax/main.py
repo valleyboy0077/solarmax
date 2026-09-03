@@ -164,6 +164,7 @@ def api_settings(
     site_name: str = Form(...),
     site_lat: float = Form(...),
     site_lon: float = Form(...),
+    site_timezone: str = Form("Australia/Brisbane"),
     poll_interval_seconds: int = Form(...),
     active_plan_id: str = Form(""),
 ):
@@ -174,6 +175,7 @@ def api_settings(
             "site_name": site_name,
             "site_lat": site_lat,
             "site_lon": site_lon,
+            "site_timezone": site_timezone,
             "poll_interval_seconds": poll_interval_seconds,
             "active_plan_id": int(active_plan_id) if active_plan_id else None,
         }

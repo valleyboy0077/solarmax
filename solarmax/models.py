@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, date
 from typing import Literal, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,7 +30,17 @@ class AppSettings(BaseModel):
     site_name: str = "Solarmax"
     site_lat: float = -27.4698
     site_lon: float = 153.0251
+    site_timezone: str = "Australia/Brisbane"
     active_plan_id: Optional[int] = None
+
+    @field_validator("site_timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            return "Australia/Brisbane"
+        return value
 
 
 class InverterProfile(BaseModel):

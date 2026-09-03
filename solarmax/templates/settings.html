@@ -20,6 +20,7 @@
     <label>Site name <input name="site_name" value="{{ state.settings.site_name }}" /></label>
     <label>Latitude <input type="number" step="0.000001" name="site_lat" value="{{ state.settings.site_lat }}" /></label>
     <label>Longitude <input type="number" step="0.000001" name="site_lon" value="{{ state.settings.site_lon }}" /></label>
+    <label>Site timezone <input name="site_timezone" value="{{ state.settings.site_timezone }}" placeholder="Australia/Brisbane" /></label>
     <label>Poll interval seconds <input type="number" min="5" max="3600" name="poll_interval_seconds" value="{{ state.settings.poll_interval_seconds }}" /></label>
     <label>Active plan
       <select name="active_plan_id">

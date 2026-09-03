@@ -4,6 +4,18 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
+from zoneinfo import ZoneInfo
+
+
+DEFAULT_SITE_TIMEZONE = "Australia/Brisbane"
+
+
+def site_time(when: datetime, site_timezone: str = DEFAULT_SITE_TIMEZONE) -> datetime:
+    """Convert a stored UTC timestamp to the site's wall-clock timezone."""
+
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(ZoneInfo(site_timezone))
 
 
 def minutes_since_midnight(when: datetime) -> int:
@@ -25,10 +37,12 @@ def bucket_end(when: datetime) -> datetime:
     return start + timedelta(minutes=30)
 
 
-def find_period(periods: list[dict], when: datetime, direction: str) -> dict | None:
+def find_period(
+    periods: list[dict], when: datetime, direction: str, site_timezone: str = DEFAULT_SITE_TIMEZONE
+) -> dict | None:
     """Find the TOU period matching a timestamp and direction."""
 
-    minute = minutes_since_midnight(when)
+    minute = minutes_since_midnight(site_time(when, site_timezone))
     for period in periods:
         if period["direction"] != direction:
             continue
@@ -50,14 +64,16 @@ def current_billing_window(today: date, billing_cycle: str, start_day: int, star
     return anchor, today
 
 
-def aggregate_bill_lines(snapshot_rows: Iterable[dict], tou_periods: list[dict]) -> list[dict]:
+def aggregate_bill_lines(
+    snapshot_rows: Iterable[dict], tou_periods: list[dict], site_timezone: str = DEFAULT_SITE_TIMEZONE
+) -> list[dict]:
     """Convert half-hour telemetry rows into bill lines."""
 
     lines: list[dict] = []
     for row in snapshot_rows:
         captured = row["captured_at"]
         for direction, kwh_key in (("import", "grid_import_kwh"), ("export", "grid_export_kwh")):
-            period = find_period(tou_periods, captured, direction)
+            period = find_period(tou_periods, captured, direction, site_timezone)
             if not period:
                 continue
             kwh = float(row.get(kwh_key, 0.0))
@@ -66,7 +82,8 @@ def aggregate_bill_lines(snapshot_rows: Iterable[dict], tou_periods: list[dict])
                 amount *= -1.0
             lines.append(
                 {
-                    "day": captured.date(),
+                    "day": site_time(captured, site_timezone).date(),
+                    "captured_at": captured,
                     "period_label": period["label"],
                     "direction": direction,
                     "kwh": kwh,
@@ -77,12 +94,16 @@ def aggregate_bill_lines(snapshot_rows: Iterable[dict], tou_periods: list[dict])
     return lines
 
 
-def rollup_by_day_and_period(lines: Iterable[dict]) -> list[dict]:
+def rollup_by_day_and_period(
+    lines: Iterable[dict], site_timezone: str = DEFAULT_SITE_TIMEZONE
+) -> list[dict]:
     """Group bill lines into display rows for the current bill breakdown."""
 
     totals: dict[tuple[date, str, str], dict] = defaultdict(lambda: {"kwh": 0.0, "amount_cents": 0.0, "rate_cents_per_kwh": 0.0})
     for line in lines:
-        key = (line["day"], line["period_label"], line["direction"])
+        captured = line.get("captured_at")
+        day = site_time(captured, site_timezone).date() if captured else line["day"]
+        key = (day, line["period_label"], line["direction"])
         bucket = totals[key]
         bucket["kwh"] += float(line["kwh"])
         bucket["amount_cents"] += float(line["amount_cents"])

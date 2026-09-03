@@ -7,8 +7,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .billing import aggregate_bill_lines, bucket_start, rollup_by_day_and_period
+from .billing import aggregate_bill_lines, bucket_start, find_period, rollup_by_day_and_period
 from .db import db_session, fetch_all, fetch_one, get_settings, init_db, set_setting
 from .inverters.base import InverterReading
 from .inverters.registry import get_adapter
@@ -37,6 +38,7 @@ class SolarmaxService:
             site_name=raw.get("site_name", "Solarmax"),
             site_lat=float(raw.get("site_lat", "-27.4698")),
             site_lon=float(raw.get("site_lon", "153.0251")),
+            site_timezone=self._valid_timezone(raw.get("site_timezone", "Australia/Brisbane")),
             active_plan_id=int(raw["active_plan_id"]) if raw.get("active_plan_id") else None,
         )
 
@@ -44,7 +46,8 @@ class SolarmaxService:
         settings = self.load_app_settings().model_dump()
         settings.update({k: v for k, v in payload.items() if v is not None})
         with db_session(self.db_path) as conn:
-            for key in ("theme", "mode", "site_name", "site_lat", "site_lon", "poll_interval_seconds"):
+            settings["site_timezone"] = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
+            for key in ("theme", "mode", "site_name", "site_lat", "site_lon", "site_timezone", "poll_interval_seconds"):
                 if key in settings:
                     set_setting(conn, key, str(settings[key]))
             set_setting(conn, "active_plan_id", "" if settings.get("active_plan_id") is None else str(settings["active_plan_id"]))
@@ -212,14 +215,16 @@ class SolarmaxService:
                     "UPDATE inverter_profiles SET reachable = 1 WHERE id = ?",
                     (inverter["id"],),
                 )
-                deltas = reading.deltas_from(previous)
+                # Lifetime counters and legacy integrated totals are different
+                # sources.  The transition itself is a fresh baseline.
+                deltas = self._deltas_for_reading(reading, previous)
                 conn.execute(
                     """
                     INSERT INTO telemetry_raw
                     (inverter_id, captured_at, solar_kw, load_kw, grid_import_kw, grid_export_kw, battery_charge_kw, battery_discharge_kw,
                      solar_total_kwh, load_total_kwh, grid_import_total_kwh, grid_export_total_kwh, battery_charge_total_kwh, battery_discharge_total_kwh,
-                     delta_solar_kwh, delta_load_kwh, delta_grid_import_kwh, delta_grid_export_kwh, delta_battery_charge_kwh, delta_battery_discharge_kwh)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     delta_solar_kwh, delta_load_kwh, delta_grid_import_kwh, delta_grid_export_kwh, delta_battery_charge_kwh, delta_battery_discharge_kwh, lifetime)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         inverter["id"],
@@ -242,8 +247,10 @@ class SolarmaxService:
                         deltas["delta_grid_export_kwh"],
                         deltas["delta_battery_charge_kwh"],
                         deltas["delta_battery_discharge_kwh"],
+                        int(reading.lifetime),
                     ),
                 )
+                self._update_daily_counters(conn, inverter["id"], reading)
                 results.append({"inverter": inverter, "reading": self._reading_to_dict(reading, deltas)})
         self.rollup_completed_buckets()
         return results
@@ -332,11 +339,12 @@ class SolarmaxService:
             if not plan_id:
                 return
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
             for row in rollups:
                 captured = datetime.fromisoformat(row["bucket_start"])
-                import_period = self._match_period(periods, captured, "import")
-                export_period = self._match_period(periods, captured, "export")
+                import_period = self._match_period(periods, captured, "import", site_timezone)
+                export_period = self._match_period(periods, captured, "export", site_timezone)
                 amount = 0.0
                 if import_period:
                     amount += float(row["grid_import_kwh"]) * float(import_period["rate_cents_per_kwh"])
@@ -354,19 +362,8 @@ class SolarmaxService:
                 return {"total_cents": 0.0, "lines": [], "rollups": []}
             plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
-            raw_lines = aggregate_bill_lines(
-                [
-                    {
-                        "captured_at": datetime.fromisoformat(row["bucket_start"]),
-                        "grid_import_kwh": row["grid_import_kwh"],
-                        "grid_export_kwh": row["grid_export_kwh"],
-                    }
-                    for row in rollups
-                ],
-                periods,
-            )
-            lines = rollups if False else rollups
             detailed = aggregate_bill_lines(
                 [
                     {
@@ -377,10 +374,12 @@ class SolarmaxService:
                     for row in rollups
                 ],
                 periods,
+                site_timezone,
             )
-            grouped = rollup_by_day_and_period(detailed)
+            detailed.extend(self._current_live_lines(conn, periods, site_timezone))
+            grouped = rollup_by_day_and_period(detailed, site_timezone)
             total = sum(float(row["amount_cents"]) for row in grouped)
-            daily = self.daily_bill_breakdown(conn, plan_id)
+            daily = self.daily_bill_breakdown(conn, plan_id, site_timezone)
             return {
                 "plan": plan,
                 "total_cents": round(total, 2),
@@ -388,10 +387,11 @@ class SolarmaxService:
                 "daily": daily,
             }
 
-    def daily_bill_breakdown(self, conn: sqlite3.Connection, plan_id: int) -> list[dict[str, Any]]:
+    def daily_bill_breakdown(self, conn: sqlite3.Connection, plan_id: int, site_timezone: str | None = None) -> list[dict[str, Any]]:
         """Return the per-day/per-period breakdown for the current bill screen."""
 
         periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+        site_timezone = site_timezone or self.load_app_settings().site_timezone
         rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
         detailed = aggregate_bill_lines(
             [
@@ -403,8 +403,10 @@ class SolarmaxService:
                 for row in rollups
             ],
             periods,
+            site_timezone,
         )
-        return rollup_by_day_and_period(detailed)
+        detailed.extend(self._current_live_lines(conn, periods, site_timezone))
+        return rollup_by_day_and_period(detailed, site_timezone)
 
     def dashboard_state(self) -> dict[str, Any]:
         """Build the dashboard payload consumed by the UI and MCP server.
@@ -464,10 +466,11 @@ class SolarmaxService:
         """Generate daily net billing bars for the dashboard chart."""
 
         with db_session(self.db_path) as conn:
+            site_timezone = self._valid_timezone(get_settings(conn).get("site_timezone", "Australia/Brisbane"))
             rows = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
             grouped: dict[str, float] = {}
             for row in rows:
-                day = datetime.fromisoformat(row["bucket_start"]).date().isoformat()
+                day = datetime.fromisoformat(row["bucket_start"]).astimezone(ZoneInfo(site_timezone)).date().isoformat()
                 grouped[day] = grouped.get(day, 0.0) + float(row["amount_cents"])
         items = sorted(grouped.items())[-days:]
         return [{"day": day, "amount_cents": round(amount, 2)} for day, amount in items]
@@ -520,6 +523,7 @@ class SolarmaxService:
             grid_export_total_kwh=float(row["grid_export_total_kwh"]),
             battery_charge_total_kwh=float(row["battery_charge_total_kwh"]),
             battery_discharge_total_kwh=float(row["battery_discharge_total_kwh"]),
+            lifetime=bool(row.get("lifetime", 0)),
         )
 
     def _reading_to_dict(self, reading: InverterReading, deltas: dict[str, float]) -> dict[str, Any]:
@@ -537,13 +541,76 @@ class SolarmaxService:
             "grid_export_total_kwh": reading.grid_export_total_kwh,
             "battery_charge_total_kwh": reading.battery_charge_total_kwh,
             "battery_discharge_total_kwh": reading.battery_discharge_total_kwh,
+            "lifetime": reading.lifetime,
         }
         data.update(deltas)
         return data
 
-    def _match_period(self, periods: list[dict[str, Any]], captured: datetime, direction: str) -> dict[str, Any] | None:
-        minute = captured.hour * 60 + captured.minute
-        for period in periods:
-            if period["direction"] == direction and period["start_minute"] <= minute < period["end_minute"]:
-                return period
-        return None
+    @staticmethod
+    def _valid_timezone(value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            return "Australia/Brisbane"
+        return value
+
+    @staticmethod
+    def _deltas_for_reading(reading: InverterReading, previous: InverterReading | None) -> dict[str, float]:
+        """Return zeroes for the one row where a totals source changes."""
+
+        if previous and reading.lifetime != previous.lifetime:
+            return reading.deltas_from(None)
+        return reading.deltas_from(previous)
+
+    def _update_daily_counters(self, conn: sqlite3.Connection, inverter_id: int, reading: InverterReading) -> None:
+        """Maintain daily lifetime-counter deltas from the site's midnight baseline."""
+
+        if not reading.lifetime:
+            return
+        settings = get_settings(conn)
+        timezone_name = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
+        day = reading.captured_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+        totals = {
+            "solar": reading.solar_total_kwh, "load": reading.load_total_kwh,
+            "grid_import": reading.grid_import_total_kwh, "grid_export": reading.grid_export_total_kwh,
+            "battery_charge": reading.battery_charge_total_kwh, "battery_discharge": reading.battery_discharge_total_kwh,
+        }
+        existing = fetch_one(conn, "SELECT * FROM daily_counters WHERE inverter_id = ? AND day = ?", (inverter_id, day))
+        if not existing:
+            columns = ", ".join(f"{key}_baseline_kwh" for key in totals)
+            conn.execute(
+                f"INSERT INTO daily_counters (inverter_id, day, {columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (inverter_id, day, *totals.values()),
+            )
+            return
+        values = {key: max(0.0, value - float(existing[f"{key}_baseline_kwh"])) for key, value in totals.items()}
+        conn.execute(
+            """UPDATE daily_counters SET solar_kwh=?, load_kwh=?, grid_import_kwh=?, grid_export_kwh=?,
+               battery_charge_kwh=?, battery_discharge_kwh=? WHERE inverter_id=? AND day=?""",
+            (*values.values(), inverter_id, day),
+        )
+
+    def _current_live_lines(self, conn: sqlite3.Connection, periods: list[dict[str, Any]], site_timezone: str) -> list[dict[str, Any]]:
+        """Price the open half-hour from lifetime counter deltas, when available."""
+
+        start = bucket_start(datetime.now(timezone.utc))
+        rows = fetch_all(conn, "SELECT DISTINCT inverter_id FROM telemetry_raw")
+        snapshots: list[dict[str, Any]] = []
+        for row in rows:
+            inverter_id = row["inverter_id"]
+            baseline = fetch_one(conn, "SELECT * FROM telemetry_raw WHERE inverter_id=? AND captured_at >= ? AND lifetime=1 ORDER BY captured_at ASC, id ASC LIMIT 1", (inverter_id, start.isoformat()))
+            current = fetch_one(conn, "SELECT * FROM telemetry_raw WHERE inverter_id=? AND lifetime=1 ORDER BY captured_at DESC, id DESC LIMIT 1", (inverter_id,))
+            if not baseline or not current:
+                continue
+            snapshots.append({
+                "captured_at": start,
+                "grid_import_kwh": max(0.0, float(current["grid_import_total_kwh"]) - float(baseline["grid_import_total_kwh"])),
+                "grid_export_kwh": max(0.0, float(current["grid_export_total_kwh"]) - float(baseline["grid_export_total_kwh"])),
+            })
+        lines = aggregate_bill_lines(snapshots, periods, site_timezone)
+        for line in lines:
+            line["period_label"] = f"Current (live) — {line['period_label']}"
+        return lines
+
+    def _match_period(self, periods: list[dict[str, Any]], captured: datetime, direction: str, site_timezone: str) -> dict[str, Any] | None:
+        return find_period(periods, captured, direction, site_timezone)
