@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from solarmax.billing import aggregate_bill_lines, find_period, rollup_by_day_and_period
 from solarmax.inverters.base import InverterReading
 from solarmax.service import SolarmaxService
+from solarmax.db import db_session
 
 
 PERIODS = [
@@ -39,3 +41,32 @@ def test_day_grouping_uses_aest_across_utc_midnight():
 def test_source_change_is_a_zero_delta_baseline():
     deltas = SolarmaxService._deltas_for_reading(reading(200.0, True), reading(10.0, False))
     assert set(deltas.values()) == {0.0}
+
+
+def test_today_export_uses_local_day_counter_not_stale_rollup(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    captured = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    today = captured.astimezone(ZoneInfo("Australia/Brisbane")).date().isoformat()
+    with db_session(service.db_path) as conn:
+        conn.execute(
+            """INSERT INTO daily_counters
+               (inverter_id, day, grid_export_kwh, solar_baseline_kwh,
+                load_baseline_kwh, grid_import_baseline_kwh,
+                grid_export_baseline_kwh, battery_charge_baseline_kwh,
+                battery_discharge_baseline_kwh)
+               VALUES (1, ?, ?, 0, 0, 0, 0, 0, 0)""",
+            (today, 0.25),
+        )
+        conn.execute(
+            """INSERT INTO telemetry_rollups
+               (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                battery_discharge_kwh, amount_cents)
+               VALUES (1, ?, ?, 0, 0, 0, 9, 0, 0, -72)""",
+            (captured.isoformat(), (captured + timedelta(minutes=30)).isoformat()),
+        )
+
+    bill = service.current_bill_summary()
+    assert bill["today_grid_export_kwh"] == 0.25
+    today_rows = [row for row in bill["rows"] if row["day"] == today]
+    assert sum(row["kwh"] for row in today_rows if row["direction"] == "export") == 0.25

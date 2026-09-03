@@ -377,6 +377,33 @@ class SolarmaxService:
                 site_timezone,
             )
             detailed.extend(self._current_live_lines(conn, periods, site_timezone))
+            # Rollups can contain stale/duplicate export rows for the open
+            # local day. The lifetime-backed daily counter is authoritative for
+            # today's total, so replace today's export lines with one value.
+            today = datetime.now(ZoneInfo(site_timezone)).date()
+            today_export = sum(
+                float(row["grid_export_kwh"])
+                for row in fetch_all(
+                    conn,
+                    "SELECT grid_export_kwh FROM daily_counters WHERE day = ?",
+                    (today.isoformat(),),
+                )
+            )
+            detailed = [
+                line for line in detailed
+                if not (line["direction"] == "export" and line["day"] == today)
+            ]
+            export_period = find_period(periods, datetime.now(timezone.utc), "export", site_timezone)
+            if export_period:
+                detailed.append({
+                    "day": today,
+                    "captured_at": datetime.now(timezone.utc),
+                    "period_label": "Grid export today",
+                    "direction": "export",
+                    "kwh": today_export,
+                    "rate_cents_per_kwh": float(export_period["rate_cents_per_kwh"]),
+                    "amount_cents": -today_export * float(export_period["rate_cents_per_kwh"]),
+                })
             grouped = rollup_by_day_and_period(detailed, site_timezone)
             total = sum(float(row["amount_cents"]) for row in grouped)
             daily = self.daily_bill_breakdown(conn, plan_id, site_timezone)
@@ -385,6 +412,7 @@ class SolarmaxService:
                 "total_cents": round(total, 2),
                 "rows": grouped,
                 "daily": daily,
+                "today_grid_export_kwh": round(today_export, 4),
             }
 
     def daily_bill_breakdown(self, conn: sqlite3.Connection, plan_id: int, site_timezone: str | None = None) -> list[dict[str, Any]]:

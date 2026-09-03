@@ -4,6 +4,7 @@
 <section class="panel form-panel">
   <div class="panel-head"><div><div class="eyebrow">Current bill</div><h2>Bill breakdown by day and TOU period</h2></div></div>
   <p class="bill-total">Total: ${{ '%.2f'|format((bill.total_cents / 100.0) if bill.total_cents else 0) }}</p>
+  <p>Grid export today: {{ '%.3f'|format(bill.today_grid_export_kwh or 0) }} kWh</p>
   <table>
     <thead><tr><th>Day</th><th>Period</th><th>Direction</th><th>kWh</th><th>Rate</th><th>Amount</th></tr></thead>
     <tbody>
