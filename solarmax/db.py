@@ -41,7 +41,6 @@ CREATE TABLE IF NOT EXISTS power_plans (
     billing_cycle TEXT NOT NULL,
     billing_start_day INTEGER NOT NULL,
     billing_start_month INTEGER NOT NULL,
-    daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0,
     notes TEXT NOT NULL DEFAULT ''
 );
 
@@ -174,9 +173,6 @@ def migrate(conn: sqlite3.Connection) -> None:
     telemetry_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_raw)")}
     if "lifetime" not in telemetry_columns:
         conn.execute("ALTER TABLE telemetry_raw ADD COLUMN lifetime INTEGER NOT NULL DEFAULT 0")
-    plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(power_plans)")}
-    if "daily_supply_charge_cents" not in plan_columns:
-        conn.execute("ALTER TABLE power_plans ADD COLUMN daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0")
 
 
 def seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -229,8 +225,8 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
         cursor = conn.execute(
             """
             INSERT INTO power_plans
-            (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, daily_supply_charge_cents, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 "Example Provider",
@@ -238,7 +234,6 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
                 "monthly",
                 1,
                 1,
-                0.0,
                 "Replace with your real tariff plan.",
             ),
         )

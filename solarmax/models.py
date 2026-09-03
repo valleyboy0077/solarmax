@@ -69,7 +69,6 @@ class PowerPlan(BaseModel):
     billing_cycle: BillingCycle = "monthly"
     billing_start_day: int = Field(default=1, ge=1, le=31)
     billing_start_month: int = Field(default=1, ge=1, le=12)
-    daily_supply_charge_cents: float = Field(default=0.0, ge=0.0, le=100000.0)
     notes: str = ""
 
 
