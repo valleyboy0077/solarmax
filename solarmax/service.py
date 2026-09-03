@@ -510,7 +510,7 @@ class SolarmaxService:
             # not have a pre-midnight lifetime baseline, report the remaining
             # meter energy without fabricating a time/rate for it.
             grouped, today_metered = self._with_meter_reconciliation(
-                conn, detailed, site_timezone,
+                conn, detailed, site_timezone, periods,
             )
             supply_charge_cents = float(plan.get("daily_supply_charge_cents", 0.0) or 0.0)
             supply_days = sorted({row["day"] for row in grouped})
@@ -554,7 +554,7 @@ class SolarmaxService:
             site_timezone,
         )
         detailed.extend(self._current_live_lines(conn, periods, site_timezone))
-        grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone)
+        grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone, periods)
         return grouped
 
     def dashboard_state(self) -> dict[str, Any]:
@@ -954,20 +954,41 @@ class SolarmaxService:
             "grid_export_kwh": float(row.get("grid_export_kwh", 0.0)),
         }
 
+    def _flat_day_rate(self, periods: list[dict[str, Any]], direction: str) -> float | None:
+        """Return the rate when a direction has exactly one full-day period.
+
+        A single 0-1440 period means the tariff is flat for that direction, so
+        a meter-reconciliation adjustment can be priced safely.  Any TOU split
+        (multiple periods, or a partial-day period) returns None so the
+        adjustment stays explicitly unpriced rather than assigned to a guessed
+        tariff.
+        """
+
+        matching = [p for p in periods if p["direction"] == direction]
+        if len(matching) != 1:
+            return None
+        period = matching[0]
+        if int(period["start_minute"]) != 0 or int(period["end_minute"]) != 1440:
+            return None
+        return float(period["rate_cents_per_kwh"])
+
     def _with_meter_reconciliation(
         self,
         conn: sqlite3.Connection,
         detailed: list[dict[str, Any]],
         site_timezone: str,
+        periods: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, float]]:
         """Keep billed daily kWh equal to plant-meter totals without fake TOU.
 
         A source restart after local midnight can make the pre-restart interval
         unknowable.  The daily meter total is still real, but its TOU split is
-        not.  Emit an explicitly unpriced adjustment for that difference
-        instead of assigning it to an arbitrary tariff period.
+        not.  Emit an adjustment for that difference; price it only when the
+        direction has a single flat full-day tariff, otherwise leave it
+        explicitly unpriced rather than assigning it to a guessed period.
         """
 
+        periods = periods or []
         grouped = rollup_by_day_and_period(detailed, site_timezone)
         today = datetime.now(ZoneInfo(site_timezone)).date()
         meter_rows = fetch_all(
@@ -1005,15 +1026,32 @@ class SolarmaxService:
                     ]
                     difference = metered[column]
                 if difference > 0.000001:
-                    grouped.append({
-                        "day": day,
-                        "period_label": "Meter reconciliation (TOU unavailable)",
-                        "direction": direction,
-                        "kwh": round(difference, 4),
-                        "rate_cents_per_kwh": None,
-                        "amount_cents": None,
-                        "unpriced": True,
-                    })
+                    flat_rate = self._flat_day_rate(periods, direction)
+                    if flat_rate is not None:
+                        # A single flat full-day tariff makes the adjustment's
+                        # price unambiguous, so bill it at that rate.  Export is
+                        # a credit (negative amount), matching aggregate_bill_lines.
+                        amount = difference * flat_rate
+                        if direction == "export":
+                            amount *= -1.0
+                        grouped.append({
+                            "day": day,
+                            "period_label": f"Meter reconciliation (flat {flat_rate:g}c)",
+                            "direction": direction,
+                            "kwh": round(difference, 4),
+                            "rate_cents_per_kwh": flat_rate,
+                            "amount_cents": round(amount, 3),
+                        })
+                    else:
+                        grouped.append({
+                            "day": day,
+                            "period_label": "Meter reconciliation (TOU unavailable)",
+                            "direction": direction,
+                            "kwh": round(difference, 4),
+                            "rate_cents_per_kwh": None,
+                            "amount_cents": None,
+                            "unpriced": True,
+                        })
         return grouped, metered_by_day.get(today.isoformat(), {
             "grid_import_kwh": 0.0,
             "grid_export_kwh": 0.0,

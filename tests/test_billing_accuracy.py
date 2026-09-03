@@ -70,13 +70,16 @@ def test_billing_reconciles_today_grid_kwh_to_the_plant_meter(tmp_path):
         )
 
     bill = service.current_bill_summary()
-    # Stale interval data must not override the plant-meter day total.  Its
-    # price is explicitly unavailable rather than assigned to an invented TOU.
+    # Stale interval data must not override the plant-meter day total.  The
+    # seeded default plan has a single flat full-day export tariff, so the
+    # adjustment is priced at that rate rather than left unpriced.
     assert bill["today_grid_export_kwh"] == 0.25
     today_rows = [row for row in bill["rows"] if row["day"] == today]
     assert sum(row["kwh"] for row in today_rows if row["direction"] == "export") == 0.25
-    reconciliation = next(row for row in today_rows if row["period_label"] == "Meter reconciliation (TOU unavailable)")
-    assert reconciliation["amount_cents"] is None
+    reconciliation = next(row for row in today_rows if "Meter reconciliation" in row["period_label"])
+    assert reconciliation["rate_cents_per_kwh"] == 8.0
+    # Export is a credit, so the amount is negative.
+    assert round(reconciliation["amount_cents"], 3) == -round(0.25 * 8.0, 3)
 
 
 def test_billing_reconciles_past_day_grid_kwh_to_daily_meter(tmp_path):
@@ -102,10 +105,57 @@ def test_billing_reconciles_past_day_grid_kwh_to_daily_meter(tmp_path):
     assert round(sum(row["kwh"] for row in yesterday_rows if row["direction"] == "export"), 4) == 29.43
     reconciliation = next(
         row for row in yesterday_rows
-        if row["direction"] == "export" and row["period_label"] == "Meter reconciliation (TOU unavailable)"
+        if row["direction"] == "export" and "Meter reconciliation" in row["period_label"]
     )
     assert reconciliation["kwh"] == 29.41
-    assert reconciliation["amount_cents"] is None
+    # Seeded default plan has a flat full-day export tariff, so the adjustment
+    # is priced at that rate.  Export is a credit (negative amount).
+    assert reconciliation["rate_cents_per_kwh"] == 8.0
+    assert round(reconciliation["amount_cents"], 3) == -round(29.41 * 8.0, 3)
+
+
+def test_meter_reconciliation_stays_unpriced_when_import_has_tou(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    yesterday = datetime.now(site_zone).date() - timedelta(days=1)
+    captured = (datetime.combine(yesterday, datetime.min.time(), tzinfo=site_zone) + timedelta(hours=12)).astimezone(timezone.utc)
+    day = yesterday.isoformat()
+    with db_session(service.db_path) as conn:
+        # Replace the seeded import TOU with two periods so the direction is
+        # not flat; keep a single flat full-day export period.
+        conn.execute("DELETE FROM tou_periods WHERE direction='import'")
+        conn.executemany(
+            "INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh) VALUES (1, ?, ?, ?, ?, ?)",
+            [
+                ("import", "Off-peak", 0, 540, 6.98),
+                ("import", "Peak", 540, 1440, 47.78),
+            ],
+        )
+        _insert_daily_counter(conn, 1, day, (0.0, 0.0, 5.0, 29.43, 0.0, 0.0))
+        conn.execute(
+            """INSERT INTO telemetry_rollups
+               (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                battery_discharge_kwh, amount_cents)
+               VALUES (1, ?, ?, 0, 0, 4.98, 29.41, 0, 0, 0)""",
+            (captured.isoformat(), (captured + timedelta(minutes=30)).isoformat()),
+        )
+
+    bill = service.current_bill_summary()
+    yesterday_rows = [row for row in bill["rows"] if row["day"] == day]
+    import_adj = next(
+        row for row in yesterday_rows
+        if row["direction"] == "import" and "Meter reconciliation" in row["period_label"]
+    )
+    export_adj = next(
+        row for row in yesterday_rows
+        if row["direction"] == "export" and "Meter reconciliation" in row["period_label"]
+    )
+    # Import has a TOU split, so its adjustment is unpriced; export is flat.
+    assert import_adj["kwh"] == 0.02
+    assert import_adj["rate_cents_per_kwh"] is None
+    assert import_adj["amount_cents"] is None
+    assert export_adj["rate_cents_per_kwh"] == 8.0
 
 
 def test_close_day_completes_rollups_and_reports_daily_counter_totals(tmp_path):
