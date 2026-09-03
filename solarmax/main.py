@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -17,6 +18,16 @@ from starlette.staticfiles import StaticFiles
 
 from .config import RuntimeConfig
 from .service import SolarmaxService
+
+
+def _currency_to_cents(value: str) -> float:
+    """Parse a user-entered currency amount and return cents."""
+    cleaned = re.sub(r"[\s$]", "", value or "")
+    if not cleaned:
+        return 0.0
+    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", cleaned):
+        raise ValueError("Daily supply charge must be a currency amount such as $1.78")
+    return round(float(cleaned) * 100, 2)
 
 config = RuntimeConfig()
 service = SolarmaxService(config.db_path)
@@ -225,6 +236,7 @@ def api_plans(
     billing_cycle: str = Form(...),
     billing_start_day: int = Form(...),
     billing_start_month: int = Form(...),
+    daily_supply_charge: str = Form("$0.00"),
     notes: str = Form(""),
 ):
     new_id = service.upsert_power_plan(
@@ -235,6 +247,7 @@ def api_plans(
             "billing_cycle": billing_cycle,
             "billing_start_day": billing_start_day,
             "billing_start_month": billing_start_month,
+            "daily_supply_charge_cents": _currency_to_cents(daily_supply_charge),
             "notes": notes,
         }
     )
@@ -245,7 +258,7 @@ def api_plans(
 
 
 @app.post("/api/tou/{plan_id}")
-def api_tou(plan_id: int, payload: str = Form(...)):
+def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00")):
     if not any(p["id"] == plan_id for p in service.list_power_plans()):
         raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
@@ -259,7 +272,9 @@ def api_tou(plan_id: int, payload: str = Form(...)):
             period.pop("plan_id", None)
             period["start_minute"] = _time_to_minute(period.get("start_minute"))
             period["end_minute"] = _time_to_minute(period.get("end_minute"))
+        supply_charge_cents = _currency_to_cents(daily_supply_charge)
         service.replace_tou_periods(plan_id, periods)
+        service.update_daily_supply_charge(plan_id, supply_charge_cents)
     except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RedirectResponse("/plans", status_code=303)

@@ -5,6 +5,7 @@ from solarmax.billing import aggregate_bill_lines, find_period, rollup_by_day_an
 from solarmax.inverters.base import InverterReading
 from solarmax.service import SolarmaxService
 from solarmax.db import db_session
+from solarmax.main import _currency_to_cents
 
 
 PERIODS = [
@@ -70,3 +71,23 @@ def test_today_export_uses_local_day_counter_not_stale_rollup(tmp_path):
     assert bill["today_grid_export_kwh"] == 0.25
     today_rows = [row for row in bill["rows"] if row["day"] == today]
     assert sum(row["kwh"] for row in today_rows if row["direction"] == "export") == 0.25
+
+
+def test_currency_parser_and_supply_charge_are_independent_of_import_kwh(tmp_path):
+    assert _currency_to_cents("$1.78") == 178.0
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    service.update_daily_supply_charge(1, 178)
+    with db_session(service.db_path) as conn:
+        conn.execute(
+            """INSERT INTO telemetry_rollups
+               (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                battery_discharge_kwh, amount_cents)
+               VALUES (1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:30:00+00:00', 0, 0, 2, 1, 0, 0, 0)"""
+        )
+    bill = service.current_bill_summary()
+    imports = [row for row in bill["rows"] if row["direction"] == "import"]
+    exports = [row for row in bill["rows"] if row["direction"] == "export"]
+    assert sum(row["kwh"] for row in imports) == 2.0
+    assert sum(row["kwh"] for row in exports) == 1.0
+    assert sum(row["amount_cents"] for row in imports) == 50.6
