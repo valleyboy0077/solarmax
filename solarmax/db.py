@@ -128,6 +128,16 @@ CREATE TABLE IF NOT EXISTS telemetry_rollups (
 """
 
 
+# Origin Energy import TOU, represented as half-open local-time intervals.
+ORIGIN_IMPORT_PERIODS = (
+    ("Shoulder", 0, 540, 25.30),
+    ("Off-peak", 540, 960, 6.98),
+    ("Peak", 960, 1260, 47.78),
+    ("Shoulder", 1260, 1440, 25.30),
+)
+ORIGIN_IMPORT_TOU_MIGRATION_KEY = "origin_import_tou_v1_applied"
+
+
 def connect(path: Path) -> sqlite3.Connection:
     """Open a SQLite connection with sensible row handling."""
 
@@ -200,6 +210,41 @@ def migrate(conn: sqlite3.Connection) -> None:
     for column in ("export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh"):
         if column not in plan_columns:
             conn.execute(f"ALTER TABLE power_plans ADD COLUMN {column} REAL NOT NULL DEFAULT 0.0")
+    _migrate_origin_import_tou(conn)
+
+
+def _migrate_origin_import_tou(conn: sqlite3.Connection) -> None:
+    """Apply the approved Origin import TOU to the current active plan once.
+
+    The migration deliberately changes only that plan's import periods.  Its
+    plan metadata, export periods, and tiered export settings are retained.
+    """
+
+    applied = conn.execute(
+        "SELECT value FROM app_settings WHERE key=?", (ORIGIN_IMPORT_TOU_MIGRATION_KEY,)
+    ).fetchone()
+    if applied:
+        return
+    active_plan = conn.execute(
+        "SELECT value FROM app_settings WHERE key='active_plan_id'"
+    ).fetchone()
+    if active_plan is None:
+        return
+    try:
+        plan_id = int(active_plan[0])
+    except (TypeError, ValueError):
+        return
+    if conn.execute("SELECT 1 FROM power_plans WHERE id=?", (plan_id,)).fetchone() is None:
+        return
+
+    conn.execute("DELETE FROM tou_periods WHERE plan_id=? AND direction='import'", (plan_id,))
+    conn.executemany(
+        """INSERT INTO tou_periods
+           (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh)
+           VALUES (?, 'import', ?, ?, ?, ?)""",
+        [(plan_id, *period) for period in ORIGIN_IMPORT_PERIODS],
+    )
+    set_setting(conn, ORIGIN_IMPORT_TOU_MIGRATION_KEY, "1")
 
 
 def seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -273,10 +318,7 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                (plan_id, "import", "Off-peak", 0, 540, 6.98),
-                (plan_id, "import", "Shoulder", 540, 960, 25.3),
-                (plan_id, "import", "Peak", 960, 1260, 47.78),
-                (plan_id, "import", "Shoulder late", 1260, 1440, 25.3),
+                *[(plan_id, "import", *period) for period in ORIGIN_IMPORT_PERIODS],
                 (plan_id, "export", "Solar export", 0, 1440, 3.0),
             ],
         )
@@ -284,6 +326,7 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
             "UPDATE power_plans SET export_tier_kwh=8.0, export_tier_rate_cents_per_kwh=8.0, export_excess_rate_cents_per_kwh=3.0 WHERE id=?",
             (plan_id,),
         )
+        set_setting(conn, ORIGIN_IMPORT_TOU_MIGRATION_KEY, "1")
 
     # Remove the original fixed demo pattern even in existing databases.  Its
     # energy was fabricated and must never contribute to a real bill.

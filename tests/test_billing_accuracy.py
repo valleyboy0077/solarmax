@@ -5,7 +5,7 @@ from solarmax.billing import aggregate_bill_lines, apply_daily_export_tier, find
 from solarmax.inverters.base import InverterReading
 from solarmax.inverters.sigenstor_ec_20_0_tp_au import SigenStorEC20TPAUAdapter
 from solarmax.service import SolarmaxService
-from solarmax.db import db_session
+from solarmax.db import ORIGIN_IMPORT_PERIODS, db_session, init_db
 from solarmax.main import _currency_to_cents
 from solarmax.main import templates
 
@@ -13,6 +13,12 @@ from solarmax.main import templates
 PERIODS = [
     {"direction": "import", "label": "Off-peak", "start_minute": 0, "end_minute": 960, "rate_cents_per_kwh": 10},
     {"direction": "import", "label": "Peak", "start_minute": 960, "end_minute": 1260, "rate_cents_per_kwh": 47.78},
+]
+
+
+ORIGIN_PERIODS = [
+    {"direction": "import", "label": label, "start_minute": start, "end_minute": end, "rate_cents_per_kwh": rate}
+    for label, start, end, rate in ORIGIN_IMPORT_PERIODS
 ]
 
 
@@ -32,6 +38,22 @@ def test_find_period_uses_aest_wall_clock():
     assert find_period(PERIODS, when, "import", "Australia/Brisbane")["label"] == "Peak"
 
 
+def test_origin_import_period_boundaries_are_exact():
+    for hour, minute, label, rate in (
+        (0, 0, "Shoulder", 25.30),
+        (8, 59, "Shoulder", 25.30),
+        (9, 0, "Off-peak", 6.98),
+        (15, 59, "Off-peak", 6.98),
+        (16, 0, "Peak", 47.78),
+        (20, 59, "Peak", 47.78),
+        (21, 0, "Shoulder", 25.30),
+        (23, 59, "Shoulder", 25.30),
+    ):
+        local = datetime(2026, 1, 1, hour, minute, tzinfo=ZoneInfo("Australia/Brisbane"))
+        period = find_period(ORIGIN_PERIODS, local.astimezone(timezone.utc), "import", "Australia/Brisbane")
+        assert (period["label"], period["rate_cents_per_kwh"]) == (label, rate)
+
+
 def test_day_grouping_uses_aest_across_utc_midnight():
     lines = aggregate_bill_lines(
         [{"captured_at": datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc), "grid_import_kwh": 1, "grid_export_kwh": 0}],
@@ -47,6 +69,44 @@ def test_export_tier_applies_once_per_local_day_and_splits_crossing_line():
         8.0, 8.0, 3.0,
     )
     assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in priced] == [(8.0, 8.0, -64.0), (2.0, 3.0, -6.0)]
+
+
+def test_origin_import_migration_preserves_active_plan_metadata_and_export_tier(tmp_path):
+    db_path = tmp_path / "solarmax.db"
+    service = SolarmaxService(db_path)
+    with db_session(db_path) as conn:
+        conn.execute(
+            """UPDATE power_plans SET provider_name=?, plan_name=?, billing_start_day=?, billing_start_month=?,
+               daily_supply_charge_cents=?, export_tier_kwh=?, export_tier_rate_cents_per_kwh=?,
+               export_excess_rate_cents_per_kwh=?, notes=? WHERE id=1""",
+            ("Origin", "Solar Boost", 13, 9, 178.0, 8.0, 8.0, 3.0, "Keep this metadata"),
+        )
+        conn.execute("DELETE FROM tou_periods WHERE plan_id=1")
+        conn.executemany(
+            "INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh) VALUES (1, ?, ?, ?, ?, ?)",
+            [("import", "Old", 0, 1440, 99.0), ("export", "Solar export", 0, 1440, 3.0)],
+        )
+        conn.execute("DELETE FROM app_settings WHERE key='origin_import_tou_v1_applied'")
+
+    init_db(db_path)
+
+    with db_session(db_path) as conn:
+        plan = dict(conn.execute("SELECT * FROM power_plans WHERE id=1").fetchone())
+        imports = [tuple(row) for row in conn.execute(
+            "SELECT label, start_minute, end_minute, rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND direction='import' ORDER BY start_minute"
+        )]
+        exports = [tuple(row) for row in conn.execute(
+            "SELECT label, start_minute, end_minute, rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND direction='export'"
+        )]
+
+    assert plan == {
+        "id": 1, "provider_name": "Origin", "plan_name": "Solar Boost", "billing_cycle": "monthly",
+        "billing_start_day": 13, "billing_start_month": 9, "daily_supply_charge_cents": 178.0,
+        "export_tier_kwh": 8.0, "export_tier_rate_cents_per_kwh": 8.0,
+        "export_excess_rate_cents_per_kwh": 3.0, "notes": "Keep this metadata",
+    }
+    assert imports == list(ORIGIN_IMPORT_PERIODS)
+    assert exports == [("Solar export", 0, 1440, 3.0)]
 
 
 def test_source_change_is_a_zero_delta_baseline():
@@ -240,7 +300,8 @@ def test_currency_parser_and_supply_charge_are_independent_of_import_kwh(tmp_pat
     exports = [row for row in bill["rows"] if row["direction"] == "export"]
     assert sum(row["kwh"] for row in imports) == 2.0
     assert sum(row["kwh"] for row in exports) == 1.0
-    assert sum(row["amount_cents"] for row in imports) == 50.6
+    # 00:00 UTC is 10:00 AEST, within Origin's 09:00–16:00 off-peak window.
+    assert sum(row["amount_cents"] for row in imports) == 13.96
 
 
 def _insert_telemetry(conn, inverter_id: int, captured_at: str, totals: tuple[float, ...]) -> None:
