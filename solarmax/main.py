@@ -58,6 +58,9 @@ def _time_to_minute(value: Any) -> int:
         return value
     if not isinstance(value, str):
         raise ValueError("TOU times must use HH:MM format")
+    # A textarea submission may retain a line-ending control beside a pasted
+    # time.  It is presentation whitespace, not part of the HH:MM value.
+    value = value.strip()
     if value == "24:00":
         return 24 * 60
     if len(value) != 5 or value[2] != ":" or not (value[:2] + value[3:]).isdigit():
@@ -273,7 +276,10 @@ def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = F
     if not any(p["id"] == plan_id for p in service.list_power_plans()):
         raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
-        periods = json.loads(payload)
+        # Textareas submitted by browsers may contain raw line-ending control
+        # characters inside an edited string.  Decode them here, then validate
+        # each typed field below rather than rejecting the whole form first.
+        periods = json.loads(payload, strict=False)
         if not isinstance(periods, list) or not all(isinstance(period, dict) for period in periods):
             raise ValueError("TOU payload must be a JSON array of periods")
         for period in periods:
