@@ -121,3 +121,45 @@ def rollup_by_day_and_period(
             }
         )
     return out
+
+
+def apply_daily_export_tier(
+    lines: Iterable[dict],
+    tier_kwh: float,
+    tier_rate_cents_per_kwh: float,
+    excess_rate_cents_per_kwh: float,
+) -> list[dict]:
+    """Price exports progressively across each site's local billing day.
+
+    Export credits are allocated in chronological line order.  A line is split
+    when it crosses the daily threshold so the displayed kWh and amounts remain
+    auditable while the first threshold is applied only once per day.
+    """
+    if tier_kwh <= 0 or tier_rate_cents_per_kwh <= 0 or excess_rate_cents_per_kwh <= 0:
+        return list(lines)
+    used_by_day: dict[date, float] = defaultdict(float)
+    output: list[dict] = []
+    for line in lines:
+        if line.get("direction") != "export" or not line.get("kwh"):
+            output.append(line)
+            continue
+        day = line["day"] if isinstance(line["day"], date) else date.fromisoformat(line["day"])
+        remaining = float(line["kwh"])
+        while remaining > 0.0000001:
+            tier_remaining = max(0.0, tier_kwh - used_by_day[day])
+            quantity = min(remaining, tier_remaining) if tier_remaining else remaining
+            rate = tier_rate_cents_per_kwh if tier_remaining else excess_rate_cents_per_kwh
+            priced = dict(line)
+            priced["day"] = day.isoformat() if not isinstance(line["day"], date) else line["day"]
+            priced["kwh"] = round(quantity, 4)
+            priced["rate_cents_per_kwh"] = rate
+            priced["amount_cents"] = round(-quantity * rate, 3)
+            suffix = "tier 1" if tier_remaining else "excess"
+            label = line["period_label"]
+            if "Meter reconciliation (flat " in label:
+                label = label.replace("Meter reconciliation (flat ", "Meter reconciliation (tiered; base ")
+            priced["period_label"] = f"{label} ({suffix})"
+            output.append(priced)
+            used_by_day[day] += quantity
+            remaining -= quantity
+    return output

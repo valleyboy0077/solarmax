@@ -69,6 +69,9 @@ class PowerPlan(BaseModel):
     billing_start_day: int = Field(default=1, ge=1, le=31)
     billing_start_month: int = Field(default=1, ge=1, le=12)
     daily_supply_charge_cents: float = Field(default=0.0, ge=0.0, le=100000.0)
+    export_tier_kwh: float = Field(default=0.0, ge=0.0, le=100000.0)
+    export_tier_rate_cents_per_kwh: float = Field(default=0.0, ge=0.0, le=999.0)
+    export_excess_rate_cents_per_kwh: float = Field(default=0.0, ge=0.0, le=999.0)
     notes: str = ""
 
 

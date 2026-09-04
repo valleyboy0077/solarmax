@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS power_plans (
     billing_start_day INTEGER NOT NULL,
     billing_start_month INTEGER NOT NULL,
     daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0,
+    export_tier_kwh REAL NOT NULL DEFAULT 0.0,
+    export_tier_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
+    export_excess_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
     notes TEXT NOT NULL DEFAULT ''
 );
 
@@ -193,6 +196,10 @@ def migrate(conn: sqlite3.Connection) -> None:
     plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(power_plans)")}
     if "daily_supply_charge_cents" not in plan_columns:
         conn.execute("ALTER TABLE power_plans ADD COLUMN daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0")
+    plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(power_plans)")}
+    for column in ("export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh"):
+        if column not in plan_columns:
+            conn.execute(f"ALTER TABLE power_plans ADD COLUMN {column} REAL NOT NULL DEFAULT 0.0")
 
 
 def seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -270,8 +277,12 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
                 (plan_id, "import", "Shoulder", 540, 960, 25.3),
                 (plan_id, "import", "Peak", 960, 1260, 47.78),
                 (plan_id, "import", "Shoulder late", 1260, 1440, 25.3),
-                (plan_id, "export", "Solar export", 0, 1440, 8.0),
+                (plan_id, "export", "Solar export", 0, 1440, 3.0),
             ],
+        )
+        conn.execute(
+            "UPDATE power_plans SET export_tier_kwh=8.0, export_tier_rate_cents_per_kwh=8.0, export_excess_rate_cents_per_kwh=3.0 WHERE id=?",
+            (plan_id,),
         )
 
     # Remove the original fixed demo pattern even in existing databases.  Its

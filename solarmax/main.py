@@ -242,6 +242,9 @@ def api_plans(
     billing_start_day: int = Form(...),
     billing_start_month: int = Form(...),
     daily_supply_charge: str = Form("$0.00"),
+    export_tier_kwh: float = Form(0.0),
+    export_tier_rate_cents_per_kwh: float = Form(0.0),
+    export_excess_rate_cents_per_kwh: float = Form(0.0),
     notes: str = Form(""),
 ):
     new_id = service.upsert_power_plan(
@@ -253,6 +256,9 @@ def api_plans(
             "billing_start_day": billing_start_day,
             "billing_start_month": billing_start_month,
             "daily_supply_charge_cents": _currency_to_cents(daily_supply_charge),
+            "export_tier_kwh": export_tier_kwh,
+            "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh,
+            "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh,
             "notes": notes,
         }
     )
@@ -263,7 +269,7 @@ def api_plans(
 
 
 @app.post("/api/tou/{plan_id}")
-def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00")):
+def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00"), export_tier_kwh: float = Form(0.0), export_tier_rate_cents_per_kwh: float = Form(0.0), export_excess_rate_cents_per_kwh: float = Form(0.0)):
     if not any(p["id"] == plan_id for p in service.list_power_plans()):
         raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
@@ -280,6 +286,8 @@ def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = F
         supply_charge_cents = _currency_to_cents(daily_supply_charge)
         service.replace_tou_periods(plan_id, periods)
         service.update_daily_supply_charge(plan_id, supply_charge_cents)
+        plan = next(p for p in service.list_power_plans() if p["id"] == plan_id)
+        service.upsert_power_plan({**plan, "export_tier_kwh": export_tier_kwh, "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh, "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh})
     except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RedirectResponse("/plans", status_code=303)

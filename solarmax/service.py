@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .billing import aggregate_bill_lines, bucket_start, find_period, rollup_by_day_and_period
+from .billing import aggregate_bill_lines, apply_daily_export_tier, bucket_start, find_period, rollup_by_day_and_period
 from .db import db_session, fetch_all, fetch_one, get_settings, init_db, set_setting
 from .inverters.base import InverterReading
 from .inverters.registry import get_adapter
@@ -143,7 +143,7 @@ class SolarmaxService:
                 conn.execute(
                     """
                     UPDATE power_plans
-                    SET provider_name=?, plan_name=?, billing_cycle=?, billing_start_day=?, billing_start_month=?, daily_supply_charge_cents=?, notes=?
+                    SET provider_name=?, plan_name=?, billing_cycle=?, billing_start_day=?, billing_start_month=?, daily_supply_charge_cents=?, export_tier_kwh=?, export_tier_rate_cents_per_kwh=?, export_excess_rate_cents_per_kwh=?, notes=?
                     WHERE id=?
                     """,
                     (
@@ -153,6 +153,9 @@ class SolarmaxService:
                         plan.billing_start_day,
                         plan.billing_start_month,
                         plan.daily_supply_charge_cents,
+                        plan.export_tier_kwh,
+                        plan.export_tier_rate_cents_per_kwh,
+                        plan.export_excess_rate_cents_per_kwh,
                         plan.notes,
                         plan.id,
                     ),
@@ -161,8 +164,8 @@ class SolarmaxService:
             cur = conn.execute(
                 """
                 INSERT INTO power_plans
-                (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, daily_supply_charge_cents, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (provider_name, plan_name, billing_cycle, billing_start_day, billing_start_month, daily_supply_charge_cents, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan.provider_name,
@@ -171,6 +174,9 @@ class SolarmaxService:
                     plan.billing_start_day,
                     plan.billing_start_month,
                     plan.daily_supply_charge_cents,
+                    plan.export_tier_kwh,
+                    plan.export_tier_rate_cents_per_kwh,
+                    plan.export_excess_rate_cents_per_kwh,
                     plan.notes,
                 ),
             )
@@ -489,6 +495,8 @@ class SolarmaxService:
             if not plan_id:
                 return {"total_cents": 0.0, "lines": [], "rollups": []}
             plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
+            if plan is None:
+                return {"total_cents": 0.0, "lines": [], "rollups": []}
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
             site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
@@ -511,6 +519,12 @@ class SolarmaxService:
             # meter energy without fabricating a time/rate for it.
             grouped, today_metered = self._with_meter_reconciliation(
                 conn, detailed, site_timezone, periods,
+            )
+            grouped = apply_daily_export_tier(
+                grouped,
+                float(plan.get("export_tier_kwh", 0.0) or 0.0),
+                float(plan.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
+                float(plan.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
             )
             supply_charge_cents = float(plan.get("daily_supply_charge_cents", 0.0) or 0.0)
             supply_days = sorted({row["day"] for row in grouped})
@@ -555,7 +569,13 @@ class SolarmaxService:
         )
         detailed.extend(self._current_live_lines(conn, periods, site_timezone))
         grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone, periods)
-        return grouped
+        plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,)) or {}
+        return apply_daily_export_tier(
+            grouped,
+            float(plan.get("export_tier_kwh", 0.0) or 0.0),
+            float(plan.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
+            float(plan.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
+        )
 
     def dashboard_state(self) -> dict[str, Any]:
         """Build the dashboard payload consumed by the UI and MCP server.

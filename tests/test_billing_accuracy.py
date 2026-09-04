@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from solarmax.billing import aggregate_bill_lines, find_period, rollup_by_day_and_period
+from solarmax.billing import aggregate_bill_lines, apply_daily_export_tier, find_period, rollup_by_day_and_period
 from solarmax.inverters.base import InverterReading
 from solarmax.inverters.sigenstor_ec_20_0_tp_au import SigenStorEC20TPAUAdapter
 from solarmax.service import SolarmaxService
@@ -39,6 +39,14 @@ def test_day_grouping_uses_aest_across_utc_midnight():
         "Australia/Brisbane",
     )
     assert rollup_by_day_and_period(lines, "Australia/Brisbane")[0]["day"] == "2026-01-02"
+
+
+def test_export_tier_applies_once_per_local_day_and_splits_crossing_line():
+    priced = apply_daily_export_tier(
+        [{"day": "2026-01-01", "period_label": "Solar export", "direction": "export", "kwh": 10.0, "amount_cents": -30.0, "rate_cents_per_kwh": 3.0}],
+        8.0, 8.0, 3.0,
+    )
+    assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in priced] == [(8.0, 8.0, -64.0), (2.0, 3.0, -6.0)]
 
 
 def test_source_change_is_a_zero_delta_baseline():
@@ -103,15 +111,12 @@ def test_billing_reconciles_past_day_grid_kwh_to_daily_meter(tmp_path):
     bill = service.current_bill_summary()
     yesterday_rows = [row for row in bill["rows"] if row["day"] == day]
     assert round(sum(row["kwh"] for row in yesterday_rows if row["direction"] == "export"), 4) == 29.43
-    reconciliation = next(
+    reconciliation = [
         row for row in yesterday_rows
         if row["direction"] == "export" and "Meter reconciliation" in row["period_label"]
-    )
-    assert reconciliation["kwh"] == 29.41
-    # Seeded default plan has a flat full-day export tariff, so the adjustment
-    # is priced at that rate.  Export is a credit (negative amount).
-    assert reconciliation["rate_cents_per_kwh"] == 8.0
-    assert round(reconciliation["amount_cents"], 3) == -round(29.41 * 8.0, 3)
+    ]
+    assert [(row["kwh"], row["rate_cents_per_kwh"]) for row in reconciliation] == [(7.98, 8.0), (21.43, 3.0)]
+    assert round(sum(row["amount_cents"] for row in reconciliation), 3) == -round(7.98 * 8 + 21.43 * 3, 3)
 
 
 def test_meter_reconciliation_stays_unpriced_when_import_has_tou(tmp_path):
@@ -151,11 +156,11 @@ def test_meter_reconciliation_stays_unpriced_when_import_has_tou(tmp_path):
         row for row in yesterday_rows
         if row["direction"] == "export" and "Meter reconciliation" in row["period_label"]
     )
-    # Import has a TOU split, so its adjustment is unpriced; export is flat.
+    # Import has a TOU split, so its adjustment is unpriced; export is tiered.
     assert import_adj["kwh"] == 0.02
     assert import_adj["rate_cents_per_kwh"] is None
     assert import_adj["amount_cents"] is None
-    assert export_adj["rate_cents_per_kwh"] == 8.0
+    assert export_adj["rate_cents_per_kwh"] == 3.0
 
 
 def test_close_day_completes_rollups_and_reports_daily_counter_totals(tmp_path):
