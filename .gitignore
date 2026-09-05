@@ -4,3 +4,10 @@ __pycache__/
 data/
 _shots/
 _probe_*.py
+.pytest_cache/
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
+solarmax/static/webui/*
+!solarmax/static/webui/.gitkeep

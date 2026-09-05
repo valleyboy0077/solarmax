@@ -24,6 +24,15 @@ Then open:
 
 - `http://localhost:9117`
 
+## Web UI rollout
+
+The legacy Jinja UI remains the default. A compiled React shell is included in
+the production image but is selected only with `SOLARMAX_WEBUI_MODE=react`.
+Set that environment variable during a controlled rollout; changing it back to
+`legacy` restores the original pages without changing the database. The switch
+affects only `/`, `/inverters`, `/plans`, `/billing`, and `/settings`; APIs,
+docs, and static assets keep their existing routes.
+
 ## Data storage
 
 The app stores data in SQLite at:

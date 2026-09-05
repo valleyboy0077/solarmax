@@ -68,7 +68,12 @@ class SolarmaxService:
 
     def save_app_settings(self, payload: dict[str, Any]) -> None:
         settings = self.load_app_settings().model_dump()
-        settings.update({k: v for k, v in payload.items() if v is not None})
+        settings.update({k: v for k, v in payload.items() if v is not None or k == "active_plan_id"})
+        settings = AppSettings(**settings).model_dump()
+        # Settings are a complete persisted configuration.  A selected plan
+        # must exist; an explicit None is the supported way to clear it.
+        if settings.get("active_plan_id") is not None and not self.get_power_plan(int(settings["active_plan_id"])):
+            raise KeyError(f"No power plan with id {settings['active_plan_id']}")
         with db_session(self.db_path) as conn:
             settings["site_timezone"] = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             for key in ("theme", "mode", "site_name", "site_lat", "site_lon", "site_timezone", "poll_interval_seconds"):
@@ -84,11 +89,15 @@ class SolarmaxService:
         with db_session(self.db_path) as conn:
             return fetch_one(conn, "SELECT * FROM inverter_profiles WHERE id = ?", (inverter_id,))
 
+    def get_power_plan(self, plan_id: int) -> dict[str, Any] | None:
+        with db_session(self.db_path) as conn:
+            return fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
+
     def upsert_inverter(self, payload: dict[str, Any]) -> int:
         profile = InverterProfile(**payload)
         with db_session(self.db_path) as conn:
             if profile.id:
-                conn.execute(
+                updated = conn.execute(
                     """
                     UPDATE inverter_profiles
                     SET name=?, model=?, adapter_kind=?, ip_address=?, subnet=?, enabled=?, battery_feed_in_limit_kw=?, battery_reserve_percent=?, export_limit_kw=?, allow_grid_charge=?, notes=?
@@ -109,6 +118,8 @@ class SolarmaxService:
                         profile.id,
                     ),
                 )
+                if not updated.rowcount:
+                    raise KeyError(f"No inverter with id {profile.id}")
                 return profile.id
             cur = conn.execute(
                 """
@@ -140,7 +151,7 @@ class SolarmaxService:
         plan = PowerPlan(**payload)
         with db_session(self.db_path) as conn:
             if plan.id:
-                conn.execute(
+                updated = conn.execute(
                     """
                     UPDATE power_plans
                     SET provider_name=?, plan_name=?, billing_cycle=?, billing_start_day=?, billing_start_month=?, daily_supply_charge_cents=?, export_tier_kwh=?, export_tier_rate_cents_per_kwh=?, export_excess_rate_cents_per_kwh=?, notes=?
@@ -160,6 +171,8 @@ class SolarmaxService:
                         plan.id,
                     ),
                 )
+                if not updated.rowcount:
+                    raise KeyError(f"No power plan with id {plan.id}")
                 return plan.id
             cur = conn.execute(
                 """
@@ -211,6 +224,49 @@ class SolarmaxService:
                     (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh)
                     for period in validated
                 ],
+            )
+
+    def save_tou_schedule(
+        self,
+        plan_id: int,
+        periods: list[dict[str, Any]],
+        daily_supply_charge_cents: float,
+        export_tier_kwh: float,
+        export_tier_rate_cents_per_kwh: float,
+        export_excess_rate_cents_per_kwh: float,
+    ) -> None:
+        """Replace a plan's schedule and tariff values in one transaction."""
+
+        validated_periods = [
+            TouPeriod(plan_id=plan_id, **{key: value for key, value in period.items() if key not in {"id", "plan_id"}})
+            for period in periods
+        ]
+        # Validate every tariff value before deleting existing rows.
+        tariff = PowerPlan(
+            provider_name="Existing",
+            plan_name="Existing",
+            daily_supply_charge_cents=daily_supply_charge_cents,
+            export_tier_kwh=export_tier_kwh,
+            export_tier_rate_cents_per_kwh=export_tier_rate_cents_per_kwh,
+            export_excess_rate_cents_per_kwh=export_excess_rate_cents_per_kwh,
+        )
+        with db_session(self.db_path) as conn:
+            if not fetch_one(conn, "SELECT id FROM power_plans WHERE id=?", (plan_id,)):
+                raise KeyError(f"No power plan with id {plan_id}")
+            conn.execute("DELETE FROM tou_periods WHERE plan_id = ?", (plan_id,))
+            conn.executemany(
+                """INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh)
+                    for period in validated_periods
+                ],
+            )
+            conn.execute(
+                """UPDATE power_plans SET daily_supply_charge_cents=?, export_tier_kwh=?,
+                   export_tier_rate_cents_per_kwh=?, export_excess_rate_cents_per_kwh=? WHERE id=?""",
+                (tariff.daily_supply_charge_cents, tariff.export_tier_kwh,
+                 tariff.export_tier_rate_cents_per_kwh, tariff.export_excess_rate_cents_per_kwh, plan_id),
             )
 
     # ---------------------------------------------------------------------
@@ -493,10 +549,10 @@ class SolarmaxService:
             settings = get_settings(conn)
             plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
             if not plan_id:
-                return {"total_cents": 0.0, "lines": [], "rollups": []}
+                return self._empty_bill_summary()
             plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
             if plan is None:
-                return {"total_cents": 0.0, "lines": [], "rollups": []}
+                return self._empty_bill_summary()
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
             site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
@@ -547,6 +603,12 @@ class SolarmaxService:
                 "today_grid_export_kwh": round(today_metered["grid_export_kwh"], 4),
                 "supply_charge_cents": supply_charge_cents,
                 "supply_charge_days": len(supply_days),
+                # Phase 0 deliberately preserves the legacy all-retained-
+                # telemetry bill. Billing-cycle configuration is not yet a
+                # filter, and this flag prevents clients from assuming it is.
+                "billing_window_applied": False,
+                "lines": [],
+                "rollups": [],
             }
 
     def daily_bill_breakdown(self, conn: sqlite3.Connection, plan_id: int, site_timezone: str | None = None) -> list[dict[str, Any]]:
@@ -607,6 +669,7 @@ class SolarmaxService:
         if not all_reachable:
             live = None
             totals = None
+            live_observed_at = None
         else:
             totals = {
                 "solar_kw": 0.0,
@@ -617,6 +680,10 @@ class SolarmaxService:
                 "battery_discharge_kw": 0.0,
             }
             enabled_ids = {int(inverter["id"]) for inverter in enabled}
+            required_rows = [rows_by_inverter[inverter_id] for inverter_id in enabled_ids]
+            live_observed_at = min(
+                datetime.fromisoformat(row["captured_at"]).isoformat() for row in required_rows
+            )
             for row in live_rows:
                 if int(row["inverter_id"]) not in enabled_ids or int(row["reachable"]) != 1:
                     continue
@@ -662,6 +729,7 @@ class SolarmaxService:
             "power_plans": plans,
             "live": live,
             "totals": totals,
+            "live_observed_at": live_observed_at,
             "all_reachable": all_reachable,
             "bill": bill,
             "theme": settings.theme,
@@ -688,15 +756,25 @@ class SolarmaxService:
         items = sorted(grouped.items())[-days:]
         return [{"day": day, "amount_cents": round(amount, 2)} for day, amount in items]
 
-    def weather_and_recommendation(self) -> dict[str, Any]:
+    def weather_and_recommendation(self, inverter_id: int | None = None) -> dict[str, Any]:
         """Fetch weather and return a recommended inverter policy for AI mode."""
 
+        # Look up the selected profile before any network request.  This makes
+        # an unknown selected ID deterministically a 404, rather than allowing
+        # an unrelated weather outage to mask that client error.
+        with db_session(self.db_path) as conn:
+            inverter = fetch_one(
+                conn,
+                "SELECT * FROM inverter_profiles WHERE id=?" if inverter_id is not None else "SELECT * FROM inverter_profiles ORDER BY id LIMIT 1",
+                (inverter_id,) if inverter_id is not None else (),
+            )
+        if not inverter:
+            identifier = inverter_id if inverter_id is not None else "available"
+            raise KeyError(f"No inverter with id {identifier}")
         settings = self.load_app_settings()
         weather = fetch_open_meteo(settings.site_lat, settings.site_lon)
-        with db_session(self.db_path) as conn:
-            inverter = fetch_one(conn, "SELECT * FROM inverter_profiles ORDER BY id LIMIT 1")
-        reserve = int(inverter["battery_reserve_percent"]) if inverter else 20
-        feed_in = float(inverter["battery_feed_in_limit_kw"]) if inverter else 0.0
+        reserve = int(inverter["battery_reserve_percent"])
+        feed_in = float(inverter["battery_feed_in_limit_kw"])
         recommendation = recommend_battery_policy(weather, reserve, feed_in)
         return {"weather": asdict(weather), "recommendation": recommendation}
 
@@ -704,7 +782,7 @@ class SolarmaxService:
         """Persist an AI recommendation back to the selected inverter profile."""
 
         with db_session(self.db_path) as conn:
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE inverter_profiles
                 SET battery_reserve_percent = ?, battery_feed_in_limit_kw = ?
@@ -716,6 +794,19 @@ class SolarmaxService:
                     inverter_id,
                 ),
             )
+            if not updated.rowcount:
+                raise KeyError(f"No inverter with id {inverter_id}")
+
+    @staticmethod
+    def _empty_bill_summary() -> dict[str, Any]:
+        """Return the stable bill shape when no active plan can price data."""
+
+        return {
+            "plan": None, "total_cents": 0.0, "rows": [], "daily": [],
+            "today_grid_import_kwh": 0.0, "today_grid_export_kwh": 0.0,
+            "supply_charge_cents": 0.0, "supply_charge_days": 0,
+            "billing_window_applied": False, "lines": [], "rollups": [],
+        }
 
     # ---------------------------------------------------------------------
     # Internal helpers

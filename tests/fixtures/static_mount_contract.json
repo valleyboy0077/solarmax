@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/static/styles.css",
+    "content_type": "text/css",
+    "markers": [":root", ".page-shell", "--accent"]
+  },
+  {
+    "path": "/static/app.js",
+    "content_type": "text/javascript",
+    "markers": ["function renderChart()", "bill-chart", "DOMContentLoaded"]
+  }
+]

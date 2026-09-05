@@ -1,0 +1,8 @@
+import { EmptyState } from "../components/ui/states";
+type PlaceholderProps = { title: string; description: string; phaseTwo: string };
+function PlaceholderRoute({ title, description, phaseTwo }: PlaceholderProps) { return <section className="page"><header className="page-header"><div><h1>{title}</h1><p>{description}</p></div></header><EmptyState title="Foundation ready"><>{phaseTwo} <span className="muted">This route intentionally avoids feature-page parity until its data and interaction work is implemented in the next phase.</span></></EmptyState></section>; }
+export function DashboardRoute() { return <PlaceholderRoute title="Overview" description="Current site operations and data availability." phaseTwo="Live energy, today totals, cost summary, and fleet health will be added in Phase 2." />; }
+export function InvertersRoute() { return <PlaceholderRoute title="Inverters" description="Manage persisted inverter profiles." phaseTwo="Profile editing and recommendation workflows are scheduled for Phase 3." />; }
+export function PlansRoute() { return <PlaceholderRoute title="Plans & TOU" description="Manage electricity plans and tariff schedules." phaseTwo="Plan and TOU editing is scheduled for Phase 4." />; }
+export function BillingRoute() { return <PlaceholderRoute title="Billing" description="Audit computed charges and credits." phaseTwo="Billing summaries and audit tables are scheduled for Phase 4." />; }
+export function SettingsRoute() { return <PlaceholderRoute title="Settings" description="Configure the site and operational preferences." phaseTwo="Settings editing and theme persistence are scheduled for Phase 3." />; }

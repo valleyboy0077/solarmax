@@ -21,3 +21,5 @@ class RuntimeConfig:
     db_path: Path = DEFAULT_DB_PATH
     host: str = os.environ.get("SOLARMAX_HOST", "0.0.0.0")
     port: int = int(os.environ.get("SOLARMAX_PORT", "9117"))
+    # The conservative default preserves the Jinja interface until rollout is explicitly enabled.
+    webui_mode: str = os.environ.get("SOLARMAX_WEBUI_MODE", "legacy")

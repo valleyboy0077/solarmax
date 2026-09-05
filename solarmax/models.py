@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator
@@ -18,6 +18,7 @@ ThemeName = Literal[
 ModeName = Literal["manual", "ai"]
 BillingCycle = Literal["monthly", "quarterly"]
 TouDirection = Literal["import", "export"]
+AdapterKind = Literal["sigenstor_ec_20_0_tp_au"]
 
 
 class AppSettings(BaseModel):
@@ -48,7 +49,7 @@ class InverterProfile(BaseModel):
     id: Optional[int] = None
     name: str
     model: str = "SigenStor EC 20.0 TP AU"
-    adapter_kind: str = "sigenstor_ec_20_0_tp_au"
+    adapter_kind: AdapterKind = "sigenstor_ec_20_0_tp_au"
     ip_address: str = ""
     subnet: str = ""
     enabled: bool = True
@@ -127,7 +128,110 @@ class BillingLine(BaseModel):
 
     day: date
     period_label: str
-    direction: TouDirection
+    direction: Literal["import", "export", "fixed"]
     kwh: float
-    rate_cents_per_kwh: float
+    rate_cents_per_kwh: float | None
+    amount_cents: float | None
+    unpriced: bool = False
+
+
+# API response models intentionally describe the existing additive wire
+# format.  Persistence models above remain the validation boundary for writes.
+class LivePowerResponse(BaseModel):
+    solar_kw: float
+    load_kw: float
+    grid_import_kw: float
+    grid_export_kw: float
+    battery_charge_kw: float
+    battery_discharge_kw: float
+
+
+class DailyEnergyTotalsResponse(BaseModel):
+    solar_total_kwh: float
+    load_total_kwh: float
+    grid_import_total_kwh: float
+    grid_export_total_kwh: float
+    battery_charge_total_kwh: float
+    battery_discharge_total_kwh: float
+
+
+class InverterResponse(InverterProfile):
+    reachable: bool = False
+
+
+class PowerPlanResponse(PowerPlan):
+    id: int
+
+
+class TouPeriodResponse(TouPeriod):
+    id: int
+
+
+class TouPeriodsResponse(BaseModel):
+    plan_id: int
+    periods: list[TouPeriodResponse]
+
+
+class BillSummaryResponse(BaseModel):
+    plan: PowerPlanResponse | None
+    total_cents: float
+    rows: list[BillingLine] = Field(default_factory=list)
+    daily: list[BillingLine] = Field(default_factory=list)
+    today_grid_import_kwh: float
+    today_grid_export_kwh: float
+    supply_charge_cents: float
+    supply_charge_days: int
+    billing_window_applied: bool
+    # Legacy sparse fields are retained during the migration window.
+    lines: list[Any] = Field(default_factory=list, deprecated=True)
+    rollups: list[Any] = Field(default_factory=list, deprecated=True)
+
+
+class DashboardStateResponse(BaseModel):
+    settings: AppSettings
+    inverters: list[InverterResponse]
+    power_plans: list[PowerPlanResponse]
+    live: LivePowerResponse | None
+    totals: DailyEnergyTotalsResponse | None
+    live_observed_at: datetime | None
+    all_reachable: bool
+    bill: BillSummaryResponse
+    theme: ThemeName
+
+
+class ChartPointResponse(BaseModel):
+    day: date
     amount_cents: float
+
+
+class ChartResponse(BaseModel):
+    points: list[ChartPointResponse]
+
+
+class CloseDayResponse(BaseModel):
+    day: date
+    solar_kwh: float
+    grid_import_kwh: float
+    grid_export_kwh: float
+
+
+class WeatherRecommendationResponse(BaseModel):
+    weather: dict[str, Any]
+    recommendation: dict[str, Any]
+
+
+class MutationSuccessResponse(BaseModel):
+    ok: Literal[True] = True
+    redirect_to: str
+    resource_id: int | None = None
+    data: dict[str, Any] | None = None
+
+
+class MutationErrorDetail(BaseModel):
+    code: str
+    message: str
+
+
+class MutationErrorResponse(BaseModel):
+    ok: Literal[False] = False
+    error: MutationErrorDetail

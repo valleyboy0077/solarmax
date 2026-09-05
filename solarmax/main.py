@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -10,13 +11,21 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from starlette.staticfiles import StaticFiles
 
 from .config import RuntimeConfig
+from .models import (
+    BillSummaryResponse, ChartResponse, CloseDayResponse, DashboardStateResponse,
+    MutationErrorResponse, MutationSuccessResponse, TouPeriodsResponse,
+    WeatherRecommendationResponse,
+)
 from .service import SolarmaxService
 
 
@@ -32,6 +41,8 @@ def _currency_to_cents(value: str) -> float:
 config = RuntimeConfig()
 service = SolarmaxService(config.db_path)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+logger = logging.getLogger(__name__)
+WEBUI_INDEX = Path(__file__).parent / "static" / "webui" / "index.html"
 
 
 def format_au_date(value: str | date | datetime) -> str:
@@ -87,6 +98,33 @@ def _tou_for_editor(periods: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 templates.env.globals["format_au_date"] = format_au_date
 
+
+def _wants_json(request: Request) -> bool:
+    return "application/json" in request.headers.get("accept", "").lower()
+
+
+def _mutation_success(redirect_to: str, resource_id: int | None = None, data: dict[str, Any] | None = None) -> JSONResponse:
+    return JSONResponse(MutationSuccessResponse(redirect_to=redirect_to, resource_id=resource_id, data=data).model_dump(mode="json"))
+
+
+def _mutation_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content=MutationErrorResponse(error={"code": code, "message": message}).model_dump(mode="json"),
+    )
+
+
+JSON_MUTATION_ERROR_RESPONSES = {
+    404: {"model": MutationErrorResponse},
+    422: {"model": MutationErrorResponse},
+    502: {"model": MutationErrorResponse},
+    504: {"model": MutationErrorResponse},
+}
+JSON_MUTATION_RESPONSES = {
+    200: {"model": MutationSuccessResponse},
+    **JSON_MUTATION_ERROR_RESPONSES,
+}
+
 _stop_event = threading.Event()
 _poll_thread: threading.Thread | None = None
 
@@ -115,69 +153,117 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Solarmax", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+class SolarmaxStaticFiles(StaticFiles):
+    """Keep legacy static serving while making fingerprinted web assets immutable."""
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        if path.startswith("webui/assets/") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path == "webui/index.html" and response.status_code == 200:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+
+app.mount("/static", SolarmaxStaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+def _serve_react_webui() -> bool:
+    """Return true only for an explicit rollout and a complete built entrypoint."""
+
+    if config.webui_mode != "react":
+        return False
+    if WEBUI_INDEX.is_file():
+        return True
+    logger.warning("React WebUI rollout requested but compiled entrypoint is unavailable; serving legacy UI")
+    return False
+
+
+def _page_response(request: Request, template_name: str, context: dict[str, Any]) -> Response:
+    """Serve a static React entrypoint during rollout, otherwise preserve Jinja rendering."""
+
+    if _serve_react_webui():
+        return FileResponse(WEBUI_INDEX, media_type="text/html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return templates.TemplateResponse(request, template_name, context)
+
+
+@app.exception_handler(RequestValidationError)
+async def json_mutation_validation_error(request: Request, exc: RequestValidationError):
+    """Use the documented mutation error envelope for negotiated JSON only."""
+
+    if request.method == "POST" and request.url.path.startswith("/api/") and _wants_json(request):
+        return _mutation_error(422, "validation_error", str(exc))
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request) -> HTMLResponse:
+def dashboard(request: Request) -> Response:
     state = service.dashboard_state()
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {"state": state, "chart_points": service.chart_points(), "bill": state["bill"], "settings": state["settings"]},
-    )
+    return _page_response(request, "dashboard.html", {"state": state, "chart_points": service.chart_points(), "bill": state["bill"], "settings": state["settings"]})
 
 
 @app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request) -> HTMLResponse:
+def settings_page(request: Request) -> Response:
     state = service.dashboard_state()
-    return templates.TemplateResponse(request, "settings.html", {"state": state})
+    return _page_response(request, "settings.html", {"state": state})
 
 
 @app.get("/inverters", response_class=HTMLResponse)
-def inverters_page(request: Request) -> HTMLResponse:
+def inverters_page(request: Request) -> Response:
     state = service.dashboard_state()
-    return templates.TemplateResponse(request, "inverters.html", {"state": state, "inverters": service.list_inverters()})
+    return _page_response(request, "inverters.html", {"state": state, "inverters": service.list_inverters()})
 
 
 @app.get("/plans", response_class=HTMLResponse)
-def plans_page(request: Request) -> HTMLResponse:
+def plans_page(request: Request) -> Response:
     state = service.dashboard_state()
     plans = service.list_power_plans()
     active = service.load_app_settings().active_plan_id
     tou = {plan["id"]: _tou_for_editor(service.list_tou_periods(plan["id"])) for plan in plans}
-    return templates.TemplateResponse(request, "plans.html", {"state": state, "plans": plans, "tou_by_plan": tou, "active_plan_id": active})
+    return _page_response(request, "plans.html", {"state": state, "plans": plans, "tou_by_plan": tou, "active_plan_id": active})
 
 
 @app.get("/billing", response_class=HTMLResponse)
-def billing_page(request: Request) -> HTMLResponse:
+def billing_page(request: Request) -> Response:
     state = service.dashboard_state()
     bill = service.current_bill_summary()
-    return templates.TemplateResponse(request, "billing.html", {"state": state, "bill": bill})
+    return _page_response(request, "billing.html", {"state": state, "bill": bill})
 
 
-@app.get("/api/state")
-def api_state() -> JSONResponse:
-    return JSONResponse(service.dashboard_state())
+@app.get("/api/state", response_model=DashboardStateResponse)
+def api_state() -> dict[str, Any]:
+    return service.dashboard_state()
 
 
-@app.get("/api/chart")
-def api_chart(days: int = 14) -> JSONResponse:
-    return JSONResponse({"points": service.chart_points(days=days)})
+@app.get("/api/chart", response_model=ChartResponse)
+def api_chart(days: int = 14) -> dict[str, Any]:
+    if not 1 <= days <= 366:
+        raise HTTPException(status_code=422, detail="days must be between 1 and 366")
+    return {"points": service.chart_points(days=days)}
 
 
-@app.get("/api/bill")
-def api_bill() -> JSONResponse:
-    return JSONResponse(service.current_bill_summary())
+@app.get("/api/bill", response_model=BillSummaryResponse)
+def api_bill() -> dict[str, Any]:
+    return service.current_bill_summary()
 
 
-@app.post("/api/close-day")
-def api_close_day() -> JSONResponse:
-    return JSONResponse(service.close_day())
+@app.post("/api/close-day", response_model=CloseDayResponse)
+def api_close_day() -> dict[str, Any]:
+    return service.close_day()
 
 
-@app.post("/api/settings")
+@app.get("/api/plans/{plan_id}/tou", response_model=TouPeriodsResponse)
+def api_tou_read(plan_id: int) -> dict[str, Any]:
+    if not service.get_power_plan(plan_id):
+        raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
+    return {"plan_id": plan_id, "periods": service.list_tou_periods(plan_id)}
+
+
+@app.post("/api/settings", responses=JSON_MUTATION_RESPONSES)
 def api_settings(
+    request: Request,
     theme: str = Form(...),
     mode: str = Form(...),
     site_name: str = Form(...),
@@ -187,8 +273,8 @@ def api_settings(
     poll_interval_seconds: int = Form(...),
     active_plan_id: str = Form(""),
 ):
-    service.save_app_settings(
-        {
+    try:
+        service.save_app_settings({
             "theme": theme,
             "mode": mode,
             "site_name": site_name,
@@ -197,13 +283,23 @@ def api_settings(
             "site_timezone": site_timezone,
             "poll_interval_seconds": poll_interval_seconds,
             "active_plan_id": int(active_plan_id) if active_plan_id else None,
-        }
-    )
+        })
+    except KeyError as exc:
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValidationError, ValueError) as exc:
+        if _wants_json(request):
+            return _mutation_error(422, "validation_error", str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _wants_json(request):
+        return _mutation_success("/settings")
     return RedirectResponse("/settings", status_code=303)
 
 
-@app.post("/api/inverters")
+@app.post("/api/inverters", responses=JSON_MUTATION_RESPONSES)
 def api_inverters(
+    request: Request,
     inverter_id: int | None = Form(None),
     name: str = Form(...),
     model: str = Form(...),
@@ -217,8 +313,8 @@ def api_inverters(
     allow_grid_charge: bool = Form(False),
     notes: str = Form(""),
 ):
-    service.upsert_inverter(
-        {
+    try:
+        saved_id = service.upsert_inverter({
             "id": inverter_id,
             "name": name,
             "model": model,
@@ -231,13 +327,23 @@ def api_inverters(
             "export_limit_kw": export_limit_kw,
             "allow_grid_charge": allow_grid_charge,
             "notes": notes,
-        }
-    )
+        })
+    except KeyError as exc:
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValidationError, ValueError) as exc:
+        if _wants_json(request):
+            return _mutation_error(422, "validation_error", str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _wants_json(request):
+        return _mutation_success("/inverters", saved_id)
     return RedirectResponse("/inverters", status_code=303)
 
 
-@app.post("/api/plans")
+@app.post("/api/plans", responses=JSON_MUTATION_RESPONSES)
 def api_plans(
+    request: Request,
     plan_id: int | None = Form(None),
     provider_name: str = Form(...),
     plan_name: str = Form(...),
@@ -250,8 +356,8 @@ def api_plans(
     export_excess_rate_cents_per_kwh: float = Form(0.0),
     notes: str = Form(""),
 ):
-    new_id = service.upsert_power_plan(
-        {
+    try:
+        new_id = service.upsert_power_plan({
             "id": plan_id,
             "provider_name": provider_name,
             "plan_name": plan_name,
@@ -263,17 +369,28 @@ def api_plans(
             "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh,
             "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh,
             "notes": notes,
-        }
-    )
-    settings = service.load_app_settings().model_dump()
-    settings["active_plan_id"] = new_id
-    service.save_app_settings(settings)
+        })
+        settings = service.load_app_settings().model_dump()
+        settings["active_plan_id"] = new_id
+        service.save_app_settings(settings)
+    except KeyError as exc:
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValidationError, ValueError) as exc:
+        if _wants_json(request):
+            return _mutation_error(422, "validation_error", str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _wants_json(request):
+        return _mutation_success("/plans", new_id)
     return RedirectResponse("/plans", status_code=303)
 
 
-@app.post("/api/tou/{plan_id}")
-def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00"), export_tier_kwh: float = Form(0.0), export_tier_rate_cents_per_kwh: float = Form(0.0), export_excess_rate_cents_per_kwh: float = Form(0.0)):
-    if not any(p["id"] == plan_id for p in service.list_power_plans()):
+@app.post("/api/tou/{plan_id}", responses=JSON_MUTATION_RESPONSES)
+def api_tou(request: Request, plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00"), export_tier_kwh: float = Form(0.0), export_tier_rate_cents_per_kwh: float = Form(0.0), export_excess_rate_cents_per_kwh: float = Form(0.0)):
+    if not service.get_power_plan(plan_id):
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", f"No power plan with id {plan_id}")
         raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
         # Textareas submitted by browsers may contain raw line-ending control
@@ -290,28 +407,58 @@ def api_tou(plan_id: int, payload: str = Form(...), daily_supply_charge: str = F
             period["start_minute"] = _time_to_minute(period.get("start_minute"))
             period["end_minute"] = _time_to_minute(period.get("end_minute"))
         supply_charge_cents = _currency_to_cents(daily_supply_charge)
-        service.replace_tou_periods(plan_id, periods)
-        service.update_daily_supply_charge(plan_id, supply_charge_cents)
-        plan = next(p for p in service.list_power_plans() if p["id"] == plan_id)
-        service.upsert_power_plan({**plan, "export_tier_kwh": export_tier_kwh, "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh, "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh})
+        service.save_tou_schedule(plan_id, periods, supply_charge_cents, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh)
     except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+        if _wants_json(request):
+            return _mutation_error(422, "validation_error", str(exc))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _wants_json(request):
+        return _mutation_success("/plans", plan_id)
     return RedirectResponse("/plans", status_code=303)
 
 
-@app.post("/api/poll-now")
-def api_poll_now():
+@app.post("/api/poll-now", responses=JSON_MUTATION_RESPONSES)
+def api_poll_now(request: Request):
     service.poll_once()
+    if _wants_json(request):
+        return _mutation_success("/")
     return RedirectResponse("/", status_code=303)
 
 
-@app.post("/api/ai/recommend")
-def api_ai_recommend():
-    return JSONResponse(service.weather_and_recommendation())
+@app.post(
+    "/api/ai/recommend",
+    response_model=WeatherRecommendationResponse | MutationSuccessResponse,
+    responses=JSON_MUTATION_ERROR_RESPONSES,
+)
+def api_ai_recommend(request: Request, inverter_id: int | None = Form(None)):
+    try:
+        result = service.weather_and_recommendation(inverter_id)
+    except KeyError as exc:
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except httpx.TimeoutException:
+        return _mutation_error(504, "weather_timeout", "Weather service timed out")
+    except httpx.HTTPError:
+        return _mutation_error(502, "weather_unavailable", "Weather service is unavailable")
+    if _wants_json(request):
+        return _mutation_success("/inverters", inverter_id, result)
+    return result
 
 
-@app.post("/api/ai/apply")
-def api_ai_apply(inverter_id: int = Form(...)):
-    rec = service.weather_and_recommendation()["recommendation"]
-    service.apply_recommendation(inverter_id, rec)
+@app.post("/api/ai/apply", responses=JSON_MUTATION_RESPONSES)
+def api_ai_apply(request: Request, inverter_id: int = Form(...)):
+    try:
+        rec = service.weather_and_recommendation(inverter_id)["recommendation"]
+        service.apply_recommendation(inverter_id, rec)
+    except KeyError as exc:
+        if _wants_json(request):
+            return _mutation_error(404, "not_found", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except httpx.TimeoutException:
+        return _mutation_error(504, "weather_timeout", "Weather service timed out")
+    except httpx.HTTPError:
+        return _mutation_error(502, "weather_unavailable", "Weather service is unavailable")
+    if _wants_json(request):
+        return _mutation_success("/inverters", inverter_id, service.get_inverter(inverter_id))
     return RedirectResponse("/inverters", status_code=303)
