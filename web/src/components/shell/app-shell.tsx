@@ -10,7 +10,7 @@ const navigation = [
 ] as const;
 
 function Navigation({ close }: { close?: () => void }) {
-  return <nav aria-label="Primary navigation" className="nav-list">{navigation.map(([to, label, Icon]) => <NavLink end={to === "/"} key={to} onClick={close} to={to} className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}><Icon aria-hidden="true" size={18} /><span>{label}</span></NavLink>)}</nav>;
+  return <nav aria-label="Primary navigation" className="nav-list">{navigation.map(([to, label, Icon]) => <NavLink aria-label={label} end={to === "/"} key={to} onClick={close} title={label} to={to} className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}><Icon aria-hidden="true" size={18} /><span>{label}</span></NavLink>)}</nav>;
 }
 
 function MobileNavigation() {
@@ -20,7 +20,9 @@ function MobileNavigation() {
 
 export function AppShell() {
   const { data, error, checking, checkedAt, refresh } = useDashboardPoll();
+  const refreshEverything = async () => { await refresh(); window.dispatchEvent(new Event("solarmax:refresh")); };
   useEffect(() => { if (data) document.documentElement.dataset.theme = data.settings.theme; }, [data]);
   const status = checking ? "Checking…" : error ? "API refresh failed" : data?.all_reachable ? "All enabled inverters reachable" : "Telemetry unavailable";
-  return <div className="app-frame"><a className="skip-link" href="#main-content">Skip to content</a><aside className="rail"><div className="brand"><SunMedium aria-hidden="true" size={20} /> SolarMax</div><Navigation /><p className="rail-mode">{data?.settings ? `${data.settings.site_name} · operational` : "Operational interface"}</p></aside><header className="topbar"><MobileNavigation /><div><strong>{data?.settings.site_name ?? "SolarMax"}</strong><span className={error ? "status danger" : "status"}>{status}</span></div><div className="top-actions"><span className="checked-at">{checkedAt ? `Checked at ${checkedAt.toLocaleTimeString("en-AU")}` : "Awaiting API"}</span><Button onClick={() => void refresh()} disabled={checking}><RefreshCw aria-hidden="true" size={16} /> Refresh data</Button></div></header>{error && <div className="stale-banner" role="alert">API refresh failed. The displayed shell may be out of date.</div>}<main id="main-content" className="content"><Outlet /></main><div aria-live="polite" className="sr-only">{status}</div></div>;
+  const statusClass = checking || (data?.all_reachable ?? false) ? "status" : "status danger";
+  return <div className="app-frame"><a className="skip-link" href="#main-content">Skip to content</a><aside className="rail"><div className="brand"><SunMedium aria-hidden="true" size={20} /> SolarMax</div><Navigation /><p className="rail-mode">{data?.settings ? `${data.settings.site_name} · operational` : "Operational interface"}</p></aside><header className="topbar"><MobileNavigation /><div><strong>{data?.settings.site_name ?? "SolarMax"}</strong><span className={statusClass}>{status}</span></div><div className="top-actions"><span className="checked-at">{checkedAt ? `Checked at ${checkedAt.toLocaleTimeString("en-AU")}` : "Awaiting API"}</span><Button onClick={() => void refreshEverything()} disabled={checking}><RefreshCw aria-hidden="true" size={16} /> Refresh data</Button></div></header>{error && <div className="stale-banner" role="alert">API refresh failed. The displayed shell may be out of date.</div>}<main id="main-content" className="content"><Outlet /></main><div aria-live="polite" className="sr-only">{status}</div></div>;
 }

@@ -6,5 +6,5 @@ export default defineConfig({
   base: "/static/webui/",
   plugins: [react(), tailwindcss()],
   server: { proxy: { "/api": "http://127.0.0.1:9117" } },
-  build: { outDir: "dist", sourcemap: true },
+  build: { outDir: "dist", sourcemap: false },
 });

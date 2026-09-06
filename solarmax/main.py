@@ -155,6 +155,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Solarmax", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_store_api_responses(request: Request, call_next):
+    """Prevent API state and mutation responses from being cached."""
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        if request.url.path.startswith("/api/"):
+            logger.exception("Unhandled API error")
+            response = JSONResponse(status_code=500, content={"detail": "Internal server error"})
+        else:
+            raise
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 class SolarmaxStaticFiles(StaticFiles):
     """Keep legacy static serving while making fingerprinted web assets immutable."""
 

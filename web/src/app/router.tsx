@@ -1,7 +1,7 @@
 import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "../components/shell/app-shell";
 import { RouteErrorBoundary } from "./route-error-boundary";
-import { BillingRoute, DashboardRoute, InvertersRoute, PlansRoute, SettingsRoute } from "../routes/placeholders";
+import { BillingRoute, DashboardRoute, InvertersRoute, PlansRoute, SettingsRoute } from "../routes/pages";
 
 export const router = createBrowserRouter([
   { path: "/", element: <AppShell />, errorElement: <RouteErrorBoundary />, children: [

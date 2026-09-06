@@ -11,8 +11,8 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test",
-    "api:generate": "python ../scripts/generate_openapi.py | openapi-typescript -o src/api/generated.ts",
+    "e2e": "npm run build && playwright test",
+    "api:generate": "python3 ../scripts/generate_openapi.py | openapi-typescript -o src/api/generated.ts",
     "api:check": "npm run api:generate && git diff --exit-code -- src/api/generated.ts"
   },
   "dependencies": {

@@ -1,10 +1,12 @@
+import type { components } from "./generated";
+
 export type FieldErrors = Record<string, string>;
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly fields: FieldErrors = {}) { super(message); }
 }
 
-type MutationResult = { ok: true; redirect_to: string; resource_id?: number | null; data?: Record<string, unknown> | null };
+export type MutationResult = components["schemas"]["MutationSuccessResponse"];
 
 function isJson(response: Response) { return response.headers.get("content-type")?.includes("application/json") ?? false; }
 
@@ -36,4 +38,11 @@ export async function apiForm(path: string, fields: Record<string, string | numb
     throw new ApiError(error.error?.message ?? "The request could not be completed.", response.status, validationErrors(error.detail));
   }
   return payload as MutationResult;
+}
+
+export async function apiPost<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { method: "POST", headers: { Accept: "application/json" }, signal });
+  const payload: unknown = isJson(response) ? await response.json() : undefined;
+  if (!response.ok) throw new ApiError((payload as { detail?: string })?.detail ?? `Request failed (${response.status})`, response.status);
+  return payload as T;
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { dashboardSnapshot, type DashboardSnapshot } from "../api/adapters";
 import { apiGet } from "../api/client";
+import type { components } from "../api/generated";
 
 type PollState = { data: DashboardSnapshot | null; error: Error | null; checking: boolean; checkedAt: Date | null };
 
@@ -17,7 +18,7 @@ export function useDashboardPoll() {
     const current = ++requestId.current;
     setState((old) => ({ ...old, checking: true }));
     try {
-      const result = dashboardSnapshot(await apiGet<unknown>("/api/state", controller.current.signal));
+      const result = dashboardSnapshot(await apiGet<components["schemas"]["DashboardStateResponse"]>("/api/state", controller.current.signal));
       retryCount.current = 0;
       if (current === requestId.current) setState({ data: result, error: null, checking: false, checkedAt: new Date() });
     } catch (error) {

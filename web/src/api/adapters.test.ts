@@ -1,3 +1,15 @@
 import { describe, expect, it } from "vitest";
+import type { components } from "./generated";
 import { dashboardSnapshot } from "./adapters";
-describe("dashboardSnapshot", () => { it("maps a Phase 0 response without inferring truthiness", () => { expect(dashboardSnapshot({ settings: { theme: "deep-ocean", site_name: "Home", poll_interval_seconds: 30 }, all_reachable: 1, live_observed_at: null }).all_reachable).toBe(false); }); });
+
+describe("dashboardSnapshot", () => {
+  it("accepts the generated dashboard response and preserves typed fields", () => {
+    const response: components["schemas"]["DashboardStateResponse"] = {
+      settings: { theme: "deep-ocean", mode: "manual", poll_interval_seconds: 30, site_name: "Home", site_lat: 0, site_lon: 0, site_timezone: "Australia/Brisbane" },
+      inverters: [], power_plans: [], live: null, totals: null, live_observed_at: null, all_reachable: true,
+      bill: { plan: null, total_cents: 0, today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
+      theme: "deep-ocean",
+    };
+    expect(dashboardSnapshot(response)).toEqual({ settings: response.settings, all_reachable: true, live_observed_at: null });
+  });
+});

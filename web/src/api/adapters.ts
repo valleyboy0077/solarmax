@@ -1,9 +1,11 @@
-export type AppTheme = "classic-light" | "classic-dark" | "deep-ocean" | "ember-core";
-export type DashboardSnapshot = { settings: { theme: AppTheme; site_name: string; poll_interval_seconds: number }; all_reachable: boolean; live_observed_at: string | null };
+import type { components } from "./generated";
 
-export function dashboardSnapshot(value: unknown): DashboardSnapshot {
-  const data = value as { settings?: { theme?: AppTheme; site_name?: string; poll_interval_seconds?: number }; all_reachable?: boolean; live_observed_at?: string | null };
+type DashboardStateResponse = components["schemas"]["DashboardStateResponse"];
+export type AppTheme = DashboardStateResponse["settings"]["theme"];
+export type DashboardSnapshot = Pick<DashboardStateResponse, "settings" | "all_reachable" | "live_observed_at">;
+
+export function dashboardSnapshot(data: DashboardStateResponse): DashboardSnapshot {
   const theme = data.settings?.theme;
-  if (!theme || !["classic-light", "classic-dark", "deep-ocean", "ember-core"].includes(theme)) throw new Error("Invalid dashboard theme response.");
-  return { settings: { theme, site_name: data.settings?.site_name ?? "SolarMax", poll_interval_seconds: data.settings?.poll_interval_seconds ?? 30 }, all_reachable: data.all_reachable === true, live_observed_at: data.live_observed_at ?? null };
+  if (!theme) throw new Error("Invalid dashboard theme response.");
+  return { settings: data.settings, all_reachable: data.all_reachable, live_observed_at: data.live_observed_at };
 }

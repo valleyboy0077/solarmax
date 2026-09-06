@@ -306,6 +306,17 @@ def test_legacy_pages_and_typed_read_routes_remain_available(service):
     assert invalid_chart.status_code == 422
 
 
+def test_api_responses_are_explicitly_not_cacheable(service):
+    with TestClient(app) as client:
+        state = client.get("/api/state")
+        bill = client.get("/api/bill")
+        mutation = client.post("/api/poll-now", headers={"Accept": "application/json"})
+
+    assert state.headers["cache-control"] == "no-store"
+    assert bill.headers["cache-control"] == "no-store"
+    assert mutation.headers["cache-control"] == "no-store"
+
+
 def test_openapi_declares_read_and_json_mutation_contracts():
     schema = app.openapi()
     state_schema = schema["paths"]["/api/state"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
