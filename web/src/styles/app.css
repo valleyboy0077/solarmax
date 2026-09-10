@@ -17,3 +17,14 @@
 @media (max-width:900px) { .split-grid { grid-template-columns:1fr; }.form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.inverter-row { grid-template-columns:1fr auto 1fr; }.inverter-row span:nth-last-child(-n+2) { display:none; } }
 @media (max-width:767px) { .page-header { align-items:start; flex-direction:column; }.page-actions { width:100%; }.status-strip,.billing-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }.status-strip>div:nth-child(2) { border-right:0; }.status-strip>div:nth-child(-n+2) { border-bottom:1px solid var(--border); }.metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.section,.form-card { padding:16px; }.form-grid { grid-template-columns:1fr; }.field.full { grid-column:auto; }.inverter-row { grid-template-columns:1fr auto; }.inverter-row>span { display:none; }.billing-summary .metric:nth-child(2) { border-right:0; }.billing-summary .metric:nth-child(-n+2) { border-bottom:1px solid var(--border); } }
 @media (max-width:419px) { .status-strip,.billing-summary,.metric-grid { grid-template-columns:1fr; }.status-strip>div,.billing-summary .metric { border-right:0; border-bottom:1px solid var(--border); }.metric { min-height:72px; }.metric strong { font-size:18px; }.inline-actions .button,.page-actions .button { width:100%; }.section-heading { flex-direction:column; } }
+
+/* The schedule stays as an eight-field editor; narrow viewports scroll the table rather than squeezing controls. */
+.tou-editor { width:100%; max-width:none; }
+.tou-editor .table-wrap { overflow-x:auto; overflow-y:hidden; }
+.tou-table { width:1248px; min-width:1248px; table-layout:fixed; }
+.tou-table .tou-direction-column { width:140px; }
+.tou-table .tou-label-column { width:190px; }
+.tou-table .tou-time-column { width:112px; }
+.tou-table .tou-rate-column { width:142px; }
+.tou-table .tou-tier-allowance-column { width:180px; }
+.tou-table .tou-actions-column { width:88px; }
