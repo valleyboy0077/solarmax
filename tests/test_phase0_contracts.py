@@ -71,6 +71,10 @@ def test_legacy_html_routes_match_the_golden_form_contract(service, legacy_html_
                 form_html = re.search(rf'<form[^>]+action="{action}".*?</form>', response.text, re.DOTALL).group(0)
                 for field in form["fields"]:
                     assert re.search(rf'name="{re.escape(field)}"', form_html)
+            if path == "/plans":
+                assert 'name="export_tier_kwh"' not in response.text
+                assert 'name="export_tier_rate_cents_per_kwh"' not in response.text
+                assert 'name="export_excess_rate_cents_per_kwh"' not in response.text
 
 
 def test_registered_static_mount_preserves_legacy_asset_contract(static_mount_contract):
@@ -183,7 +187,7 @@ def test_tou_read_and_save_are_contractual_and_atomic(service, monkeypatch):
 
     invalid_periods = [*before_periods, {"direction": "import", "label": "Broken", "start_minute": 0, "end_minute": 15, "rate_cents_per_kwh": 1.0}]
     with pytest.raises(ValueError):
-        service.save_tou_schedule(plan["id"], invalid_periods, 178.0, 8.0, 8.0, 3.0)
+        service.save_tou_schedule(plan["id"], invalid_periods, 178.0)
     assert service.list_tou_periods(plan["id"]) == before_periods
     # An error after the replacement DELETE has started must still roll back
     # both schedule and tariff data as one database transaction.
@@ -191,10 +195,34 @@ def test_tou_read_and_save_are_contractual_and_atomic(service, monkeypatch):
         conn.execute("""CREATE TRIGGER fail_phase0_tou_insert BEFORE INSERT ON tou_periods
                         WHEN NEW.label = 'Off-peak' BEGIN SELECT RAISE(ABORT, 'simulated insert failure'); END""")
     with pytest.raises(sqlite3.IntegrityError, match="simulated insert failure"):
-        service.save_tou_schedule(plan["id"], before_periods, 178.0, 8.0, 8.0, 3.0)
+        service.save_tou_schedule(plan["id"], before_periods, 178.0)
     assert service.list_tou_periods(plan["id"]) == before_periods
     after_plan = next(p for p in service.list_power_plans() if p["id"] == plan["id"])
     assert after_plan["daily_supply_charge_cents"] == before_plan["daily_supply_charge_cents"]
+
+
+def test_tou_api_persists_export_row_tiers_and_rejects_legacy_plan_tier_fields(service):
+    plan = service.list_power_plans()[0]
+    payload = [
+        {"direction": "import", "label": "Import", "start_minute": "00:00", "end_minute": "24:00", "rate_cents_per_kwh": 25.0},
+        {"direction": "export", "label": "Peak battery export", "start_minute": "00:00", "end_minute": "09:00", "rate_cents_per_kwh": 20.0, "export_tier_kwh": 0.0, "export_tier_rate_cents_per_kwh": 0.0, "export_excess_rate_cents_per_kwh": 0.0},
+        {"direction": "export", "label": "Daytime solar export", "start_minute": "09:00", "end_minute": "24:00", "rate_cents_per_kwh": 3.0, "export_tier_kwh": 8.0, "export_tier_rate_cents_per_kwh": 8.0, "export_excess_rate_cents_per_kwh": 3.0},
+    ]
+    with TestClient(app) as client:
+        response = client.post(f"/api/tou/{plan['id']}", data={"payload": json.dumps(payload), "daily_supply_charge": "$0.00"}, headers={"Accept": "application/json"})
+        read = client.get(f"/api/plans/{plan['id']}/tou")
+    assert response.status_code == 200
+    rows = {row["label"]: row for row in read.json()["periods"]}
+    assert rows["Peak battery export"]["export_tier_kwh"] == 0.0
+    assert rows["Daytime solar export"]["export_tier_kwh"] == 8.0
+
+    legacy_payload = [{"direction": "export", "label": "Solar export", "start_minute": "00:00", "end_minute": "24:00", "rate_cents_per_kwh": 3.0}]
+    with TestClient(app) as client:
+        legacy = client.post(f"/api/tou/{plan['id']}", data={"payload": json.dumps(legacy_payload), "daily_supply_charge": "$0.00", "export_tier_kwh": "8", "export_tier_rate_cents_per_kwh": "8", "export_excess_rate_cents_per_kwh": "3"}, headers={"Accept": "application/json"})
+    assert legacy.status_code == 422
+    assert legacy.json()["error"]["code"] == "validation_error"
+    assert "deprecated" in legacy.json()["error"]["message"]
+    assert rows == {row["label"]: row for row in service.list_tou_periods(plan["id"])}
 
 
 def test_no_plan_bill_is_normalized_and_billing_window_is_explicit(service):

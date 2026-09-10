@@ -2,12 +2,12 @@
   "/": {"contains": ["Solar optimisation control room", "Running daily bill delta"], "forms": [{"action": "/api/poll-now", "fields": []}]},
   "/settings": {"contains": ["Settings", "Application settings"], "forms": [{"action": "/api/settings", "fields": ["theme", "mode", "site_name", "site_lat", "site_lon", "site_timezone", "poll_interval_seconds", "active_plan_id"]}]},
   "/inverters": {"contains": ["Inverter profile", "Edit / add inverter"], "forms": [{"action": "/api/inverters", "fields": ["inverter_id", "name", "model", "adapter_kind", "ip_address", "subnet", "enabled", "battery_feed_in_limit_kw", "battery_reserve_percent", "export_limit_kw", "allow_grid_charge", "notes"]}, {"action": "/api/ai/apply", "fields": ["inverter_id"]}]},
-  "/plans": {"contains": ["Power plans", "Import/export rates"], "forms": [{"action": "/api/plans", "fields": ["plan_id", "provider_name", "plan_name", "billing_cycle", "billing_start_day", "billing_start_month", "notes"]}, {"action": "/api/tou/1", "fields": ["daily_supply_charge", "export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh", "payload"]}]},
+  "/plans": {"contains": ["Power plans", "Import/export rates"], "forms": [{"action": "/api/plans", "fields": ["plan_id", "provider_name", "plan_name", "billing_cycle", "billing_start_day", "billing_start_month", "notes"]}, {"action": "/api/tou/1", "fields": ["daily_supply_charge", "payload"]}]},
   "/billing": {"contains": ["Current bill", "Bill breakdown by day and TOU period"], "forms": []}
   ,"api": [
     {"method": "GET", "path": "/api/state", "status": 200, "json_keys": ["settings", "inverters", "power_plans", "live", "totals", "all_reachable", "bill", "theme", "live_observed_at"]},
     {"method": "GET", "path": "/api/chart?days=1", "status": 200, "json_keys": ["points"]},
-    {"method": "GET", "path": "/api/bill", "status": 200, "json_keys": ["plan", "total_cents", "rows", "daily", "today_grid_import_kwh", "today_grid_export_kwh", "supply_charge_cents", "supply_charge_days", "billing_window_applied", "lines", "rollups"]},
+    {"method": "GET", "path": "/api/bill", "status": 200, "json_keys": ["plan", "total_cents", "rows", "daily", "daily_site_totals", "today_grid_import_kwh", "today_grid_export_kwh", "supply_charge_cents", "supply_charge_days", "billing_window_applied", "lines", "rollups"]},
     {"method": "POST", "path": "/api/close-day", "status": 200, "json_keys": ["day", "solar_kwh", "grid_export_kwh", "grid_import_kwh"]},
     {"method": "GET", "path": "/api/plans/1/tou", "status": 200, "json_keys": ["plan_id", "periods"]},
     {"method": "POST", "path": "/api/settings", "data": {"theme": "classic-dark", "mode": "manual", "site_name": "Solarmax", "site_lat": "-27.4698", "site_lon": "153.0251", "site_timezone": "Australia/Brisbane", "poll_interval_seconds": "30", "active_plan_id": "1"}, "status": 303, "location": "/settings"},

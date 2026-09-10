@@ -368,12 +368,13 @@ def api_plans(
     billing_start_day: int = Form(...),
     billing_start_month: int = Form(...),
     daily_supply_charge: str = Form("$0.00"),
-    export_tier_kwh: float = Form(0.0),
-    export_tier_rate_cents_per_kwh: float = Form(0.0),
-    export_excess_rate_cents_per_kwh: float = Form(0.0),
+    export_tier_kwh: float | None = Form(None),
+    export_tier_rate_cents_per_kwh: float | None = Form(None),
+    export_excess_rate_cents_per_kwh: float | None = Form(None),
     notes: str = Form(""),
 ):
     try:
+        existing = service.get_power_plan(plan_id) if plan_id else None
         new_id = service.upsert_power_plan({
             "id": plan_id,
             "provider_name": provider_name,
@@ -382,9 +383,9 @@ def api_plans(
             "billing_start_day": billing_start_day,
             "billing_start_month": billing_start_month,
             "daily_supply_charge_cents": _currency_to_cents(daily_supply_charge),
-            "export_tier_kwh": export_tier_kwh,
-            "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh,
-            "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh,
+            "export_tier_kwh": export_tier_kwh if export_tier_kwh is not None else (existing or {}).get("export_tier_kwh", 0.0),
+            "export_tier_rate_cents_per_kwh": export_tier_rate_cents_per_kwh if export_tier_rate_cents_per_kwh is not None else (existing or {}).get("export_tier_rate_cents_per_kwh", 0.0),
+            "export_excess_rate_cents_per_kwh": export_excess_rate_cents_per_kwh if export_excess_rate_cents_per_kwh is not None else (existing or {}).get("export_excess_rate_cents_per_kwh", 0.0),
             "notes": notes,
         })
         settings = service.load_app_settings().model_dump()
@@ -404,12 +405,24 @@ def api_plans(
 
 
 @app.post("/api/tou/{plan_id}", responses=JSON_MUTATION_RESPONSES)
-def api_tou(request: Request, plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00"), export_tier_kwh: float = Form(0.0), export_tier_rate_cents_per_kwh: float = Form(0.0), export_excess_rate_cents_per_kwh: float = Form(0.0)):
+def api_tou(request: Request, plan_id: int, payload: str = Form(...), daily_supply_charge: str = Form("$0.00"), export_tier_kwh: float | None = Form(None), export_tier_rate_cents_per_kwh: float | None = Form(None), export_excess_rate_cents_per_kwh: float | None = Form(None)):
     if not service.get_power_plan(plan_id):
         if _wants_json(request):
             return _mutation_error(404, "not_found", f"No power plan with id {plan_id}")
         raise HTTPException(status_code=404, detail=f"No power plan with id {plan_id}")
     try:
+        # Tiers now belong to individual export periods in ``payload``.  Do
+        # not silently attach the retired plan-wide fields to an arbitrary
+        # period: partial legacy submissions could otherwise create a tier
+        # with a zero credit rate.
+        if any(value is not None for value in (
+            export_tier_kwh,
+            export_tier_rate_cents_per_kwh,
+            export_excess_rate_cents_per_kwh,
+        )):
+            raise ValueError(
+                "Plan-wide export tier fields are deprecated; configure all tier values on an export TOU period"
+            )
         # Textareas submitted by browsers may contain raw line-ending control
         # characters inside an edited string.  Decode them here, then validate
         # each typed field below rather than rejecting the whole form first.
@@ -424,7 +437,7 @@ def api_tou(request: Request, plan_id: int, payload: str = Form(...), daily_supp
             period["start_minute"] = _time_to_minute(period.get("start_minute"))
             period["end_minute"] = _time_to_minute(period.get("end_minute"))
         supply_charge_cents = _currency_to_cents(daily_supply_charge)
-        service.save_tou_schedule(plan_id, periods, supply_charge_cents, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh)
+        service.save_tou_schedule(plan_id, periods, supply_charge_cents)
     except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
         if _wants_json(request):
             return _mutation_error(422, "validation_error", str(exc))

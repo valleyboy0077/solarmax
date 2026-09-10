@@ -89,6 +89,13 @@ def aggregate_bill_lines(
                     "kwh": kwh,
                     "rate_cents_per_kwh": float(period["rate_cents_per_kwh"]),
                     "amount_cents": amount,
+                    "tou_period_id": period.get("id"),
+                    # Preserve the period's pricing mode until the display
+                    # rollup.  Only export rows with a positive allowance are
+                    # eligible for daily tiering.
+                    "export_tier_kwh": float(period.get("export_tier_kwh", 0.0) or 0.0),
+                    "export_tier_rate_cents_per_kwh": float(period.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
+                    "export_excess_rate_cents_per_kwh": float(period.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
                 }
             )
     return lines
@@ -99,17 +106,18 @@ def rollup_by_day_and_period(
 ) -> list[dict]:
     """Group bill lines into display rows for the current bill breakdown."""
 
-    totals: dict[tuple[date, str, str], dict] = defaultdict(lambda: {"kwh": 0.0, "amount_cents": 0.0, "rate_cents_per_kwh": 0.0})
+    totals: dict[tuple[date, str, str, int | None, float, float, float], dict] = defaultdict(lambda: {"kwh": 0.0, "amount_cents": 0.0, "rate_cents_per_kwh": 0.0})
     for line in lines:
         captured = line.get("captured_at")
         day = site_time(captured, site_timezone).date() if captured else line["day"]
-        key = (day, line["period_label"], line["direction"])
+        tier = (float(line.get("export_tier_kwh", 0.0) or 0.0), float(line.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0), float(line.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0))
+        key = (day, line["period_label"], line["direction"], line.get("tou_period_id"), *tier)
         bucket = totals[key]
         bucket["kwh"] += float(line["kwh"])
         bucket["amount_cents"] += float(line["amount_cents"])
         bucket["rate_cents_per_kwh"] = float(line["rate_cents_per_kwh"])
     out = []
-    for (day, period_label, direction), bucket in sorted(totals.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
+    for (day, period_label, direction, period_id, tier_kwh, tier_rate, excess_rate), bucket in sorted(totals.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
         out.append(
             {
                 "day": day.isoformat(),
@@ -118,6 +126,10 @@ def rollup_by_day_and_period(
                 "kwh": round(bucket["kwh"], 4),
                 "rate_cents_per_kwh": round(bucket["rate_cents_per_kwh"], 3),
                 "amount_cents": round(bucket["amount_cents"], 3),
+                "tou_period_id": period_id,
+                "export_tier_kwh": tier_kwh,
+                "export_tier_rate_cents_per_kwh": tier_rate,
+                "export_excess_rate_cents_per_kwh": excess_rate,
             }
         )
     return out
@@ -125,9 +137,9 @@ def rollup_by_day_and_period(
 
 def apply_daily_export_tier(
     lines: Iterable[dict],
-    tier_kwh: float,
-    tier_rate_cents_per_kwh: float,
-    excess_rate_cents_per_kwh: float,
+    tier_kwh: float | None = None,
+    tier_rate_cents_per_kwh: float | None = None,
+    excess_rate_cents_per_kwh: float | None = None,
 ) -> list[dict]:
     """Price exports progressively across each site's local billing day.
 
@@ -135,20 +147,31 @@ def apply_daily_export_tier(
     when it crosses the daily threshold so the displayed kWh and amounts remain
     auditable while the first threshold is applied only once per day.
     """
-    if tier_kwh <= 0 or tier_rate_cents_per_kwh <= 0 or excess_rate_cents_per_kwh <= 0:
-        return list(lines)
-    used_by_day: dict[date, float] = defaultdict(float)
+    # Optional arguments retain the public helper's legacy plan-wide mode.
+    # Normal billing obtains the configuration from each export TOU period.
+    legacy = None if tier_kwh is None else (tier_kwh, tier_rate_cents_per_kwh or 0.0, excess_rate_cents_per_kwh or 0.0)
+    used_by_day: dict[tuple[date, str], float] = defaultdict(float)
     output: list[dict] = []
     for line in lines:
         if line.get("direction") != "export" or not line.get("kwh"):
             output.append(line)
             continue
+        configured = legacy or (
+            float(line.get("export_tier_kwh", 0.0) or 0.0),
+            float(line.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
+            float(line.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
+        )
+        configured_kwh, configured_tier_rate, configured_excess_rate = configured
+        if configured_kwh <= 0:
+            output.append(line)
+            continue
         day = line["day"] if isinstance(line["day"], date) else date.fromisoformat(line["day"])
         remaining = float(line["kwh"])
+        usage_key = (day, str(line.get("tou_period_id") or line.get("period_label", "")))
         while remaining > 0.0000001:
-            tier_remaining = max(0.0, tier_kwh - used_by_day[day])
+            tier_remaining = max(0.0, configured_kwh - used_by_day[usage_key])
             quantity = min(remaining, tier_remaining) if tier_remaining else remaining
-            rate = tier_rate_cents_per_kwh if tier_remaining else excess_rate_cents_per_kwh
+            rate = configured_tier_rate if tier_remaining else configured_excess_rate
             priced = dict(line)
             priced["day"] = day.isoformat() if not isinstance(line["day"], date) else line["day"]
             priced["kwh"] = round(quantity, 4)
@@ -160,6 +183,6 @@ def apply_daily_export_tier(
                 label = label.replace("Meter reconciliation (flat ", "Meter reconciliation (tiered; base ")
             priced["period_label"] = f"{label} ({suffix})"
             output.append(priced)
-            used_by_day[day] += quantity
+            used_by_day[usage_key] += quantity
             remaining -= quantity
     return output

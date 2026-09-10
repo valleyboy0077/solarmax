@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ThemeName = Literal[
@@ -86,6 +86,22 @@ class TouPeriod(BaseModel):
     start_minute: int = Field(ge=0, le=24 * 60)
     end_minute: int = Field(ge=0, le=24 * 60)
     rate_cents_per_kwh: float = Field(ge=0.0, le=999.0)
+    export_tier_kwh: float = Field(default=0.0, ge=0.0, le=100000.0)
+    export_tier_rate_cents_per_kwh: float = Field(default=0.0, ge=0.0, le=999.0)
+    export_excess_rate_cents_per_kwh: float = Field(default=0.0, ge=0.0, le=999.0)
+
+    @model_validator(mode="after")
+    def export_tiers_match_direction(self):
+        tiers = (
+            self.export_tier_kwh,
+            self.export_tier_rate_cents_per_kwh,
+            self.export_excess_rate_cents_per_kwh,
+        )
+        if self.direction == "import" and any(tiers):
+            raise ValueError("Import TOU periods cannot have export tier values")
+        if any(tiers) and (self.export_tier_kwh <= 0 or self.export_tier_rate_cents_per_kwh <= 0 or self.export_excess_rate_cents_per_kwh <= 0):
+            raise ValueError("Tiered export periods require allowance, tier-one rate, and excess rate")
+        return self
 
     @field_validator("end_minute")
     @classmethod
@@ -135,6 +151,19 @@ class BillingLine(BaseModel):
     unpriced: bool = False
 
 
+class DailySiteTotal(BaseModel):
+    """Authoritative local-day energy totals and the corresponding bill."""
+
+    day: date
+    solar_kwh: float
+    load_kwh: float
+    grid_import_kwh: float
+    grid_export_kwh: float
+    battery_charge_kwh: float
+    battery_discharge_kwh: float
+    daily_bill_amount_cents: float
+
+
 # API response models intentionally describe the existing additive wire
 # format.  Persistence models above remain the validation boundary for writes.
 class LivePowerResponse(BaseModel):
@@ -177,6 +206,7 @@ class BillSummaryResponse(BaseModel):
     total_cents: float
     rows: list[BillingLine] = Field(default_factory=list)
     daily: list[BillingLine] = Field(default_factory=list)
+    daily_site_totals: list[DailySiteTotal] = Field(default_factory=list)
     today_grid_import_kwh: float
     today_grid_export_kwh: float
     supply_charge_cents: float

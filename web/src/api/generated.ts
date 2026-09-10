@@ -351,6 +351,8 @@ export interface components {
             rows?: components["schemas"]["BillingLine"][];
             /** Daily */
             daily?: components["schemas"]["BillingLine"][];
+            /** Daily Site Totals */
+            daily_site_totals?: components["schemas"]["DailySiteTotal"][];
             /** Today Grid Import Kwh */
             today_grid_import_kwh: number;
             /** Today Grid Export Kwh */
@@ -481,21 +483,12 @@ export interface components {
              * @default $0.00
              */
             daily_supply_charge: string;
-            /**
-             * Export Tier Kwh
-             * @default 0
-             */
-            export_tier_kwh: number;
-            /**
-             * Export Tier Rate Cents Per Kwh
-             * @default 0
-             */
-            export_tier_rate_cents_per_kwh: number;
-            /**
-             * Export Excess Rate Cents Per Kwh
-             * @default 0
-             */
-            export_excess_rate_cents_per_kwh: number;
+            /** Export Tier Kwh */
+            export_tier_kwh?: number | null;
+            /** Export Tier Rate Cents Per Kwh */
+            export_tier_rate_cents_per_kwh?: number | null;
+            /** Export Excess Rate Cents Per Kwh */
+            export_excess_rate_cents_per_kwh?: number | null;
             /**
              * Notes
              * @default
@@ -536,21 +529,12 @@ export interface components {
              * @default $0.00
              */
             daily_supply_charge: string;
-            /**
-             * Export Tier Kwh
-             * @default 0
-             */
-            export_tier_kwh: number;
-            /**
-             * Export Tier Rate Cents Per Kwh
-             * @default 0
-             */
-            export_tier_rate_cents_per_kwh: number;
-            /**
-             * Export Excess Rate Cents Per Kwh
-             * @default 0
-             */
-            export_excess_rate_cents_per_kwh: number;
+            /** Export Tier Kwh */
+            export_tier_kwh?: number | null;
+            /** Export Tier Rate Cents Per Kwh */
+            export_tier_rate_cents_per_kwh?: number | null;
+            /** Export Excess Rate Cents Per Kwh */
+            export_excess_rate_cents_per_kwh?: number | null;
         };
         /** ChartPointResponse */
         ChartPointResponse: {
@@ -595,6 +579,31 @@ export interface components {
             battery_charge_total_kwh: number;
             /** Battery Discharge Total Kwh */
             battery_discharge_total_kwh: number;
+        };
+        /**
+         * DailySiteTotal
+         * @description Authoritative local-day energy totals and the corresponding bill.
+         */
+        DailySiteTotal: {
+            /**
+             * Day
+             * Format: date
+             */
+            day: string;
+            /** Solar Kwh */
+            solar_kwh: number;
+            /** Load Kwh */
+            load_kwh: number;
+            /** Grid Import Kwh */
+            grid_import_kwh: number;
+            /** Grid Export Kwh */
+            grid_export_kwh: number;
+            /** Battery Charge Kwh */
+            battery_charge_kwh: number;
+            /** Battery Discharge Kwh */
+            battery_discharge_kwh: number;
+            /** Daily Bill Amount Cents */
+            daily_bill_amount_cents: number;
         };
         /** DashboardStateResponse */
         DashboardStateResponse: {
@@ -802,6 +811,21 @@ export interface components {
             end_minute: number;
             /** Rate Cents Per Kwh */
             rate_cents_per_kwh: number;
+            /**
+             * Export Tier Kwh
+             * @default 0
+             */
+            export_tier_kwh: number;
+            /**
+             * Export Tier Rate Cents Per Kwh
+             * @default 0
+             */
+            export_tier_rate_cents_per_kwh: number;
+            /**
+             * Export Excess Rate Cents Per Kwh
+             * @default 0
+             */
+            export_excess_rate_cents_per_kwh: number;
         };
         /** TouPeriodsResponse */
         TouPeriodsResponse: {

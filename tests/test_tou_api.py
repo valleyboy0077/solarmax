@@ -32,9 +32,6 @@ def test_tou_save_accepts_browser_normalized_control_after_edited_time(tmp_path,
             data={
                 "payload": payload,
                 "daily_supply_charge": "$1.78",
-                "export_tier_kwh": "8",
-                "export_tier_rate_cents_per_kwh": "8",
-                "export_excess_rate_cents_per_kwh": "3",
             },
             follow_redirects=False,
         )
@@ -45,4 +42,27 @@ def test_tou_save_accepts_browser_normalized_control_after_edited_time(tmp_path,
     assert (off_peak["start_minute"], off_peak["end_minute"]) == (540, 960)
     saved_plan = service.list_power_plans()[0]
     assert saved_plan["daily_supply_charge_cents"] == 178.0
-    assert saved_plan["export_tier_rate_cents_per_kwh"] == 8.0
+
+
+@pytest.mark.parametrize("legacy_tiers", [
+    {"export_tier_kwh": "8", "export_tier_rate_cents_per_kwh": "0", "export_excess_rate_cents_per_kwh": "3"},
+    {"export_tier_kwh": "8", "export_tier_rate_cents_per_kwh": "8", "export_excess_rate_cents_per_kwh": "0"},
+    {"export_tier_kwh": "8"},
+])
+def test_tou_api_rejects_deprecated_plan_wide_tiers_without_replacing_schedule(tmp_path, monkeypatch, legacy_tiers):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    monkeypatch.setattr("solarmax.main.service", service)
+    plan = service.list_power_plans()[0]
+    before = service.list_tou_periods(plan["id"])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/tou/{plan['id']}",
+            data={"payload": "[]", **legacy_tiers},
+            headers={"Accept": "application/json"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert "deprecated" in response.json()["error"]["message"]
+    assert service.list_tou_periods(plan["id"]) == before

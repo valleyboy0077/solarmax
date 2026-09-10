@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS tou_periods (
     start_minute INTEGER NOT NULL,
     end_minute INTEGER NOT NULL,
     rate_cents_per_kwh REAL NOT NULL,
+    export_tier_kwh REAL NOT NULL DEFAULT 0.0,
+    export_tier_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
+    export_excess_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
     FOREIGN KEY(plan_id) REFERENCES power_plans(id) ON DELETE CASCADE
 );
 
@@ -136,6 +139,7 @@ ORIGIN_IMPORT_PERIODS = (
     ("Shoulder", 1260, 1440, 25.30),
 )
 ORIGIN_IMPORT_TOU_MIGRATION_KEY = "origin_import_tou_v1_applied"
+EXPORT_TIER_TOU_MIGRATION_KEY = "export_tiers_to_tou_v1_applied"
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -210,7 +214,53 @@ def migrate(conn: sqlite3.Connection) -> None:
     for column in ("export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh"):
         if column not in plan_columns:
             conn.execute(f"ALTER TABLE power_plans ADD COLUMN {column} REAL NOT NULL DEFAULT 0.0")
+    tou_columns = {row[1] for row in conn.execute("PRAGMA table_info(tou_periods)")}
+    for column in ("export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh"):
+        if column not in tou_columns:
+            conn.execute(f"ALTER TABLE tou_periods ADD COLUMN {column} REAL NOT NULL DEFAULT 0.0")
+    _migrate_export_tiers_to_tou_periods(conn)
     _migrate_origin_import_tou(conn)
+
+
+def _migrate_export_tiers_to_tou_periods(conn: sqlite3.Connection) -> None:
+    """Attach legacy plan-wide tiers to the plan's Solar export row once.
+
+    The legacy columns deliberately remain for old API clients, but billing now
+    reads the period columns. The one-time migration updates only the explicitly
+    named Solar export period so it cannot turn a separate battery-export row
+    into a tiered tariff.
+    """
+    if conn.execute(
+        "SELECT 1 FROM app_settings WHERE key=?", (EXPORT_TIER_TOU_MIGRATION_KEY,)
+    ).fetchone():
+        return
+    plans = conn.execute(
+        """SELECT id, export_tier_kwh, export_tier_rate_cents_per_kwh,
+                  export_excess_rate_cents_per_kwh FROM power_plans"""
+    ).fetchall()
+    for plan in plans:
+        tiers = tuple(float(plan[column] or 0.0) for column in (
+            "export_tier_kwh",
+            "export_tier_rate_cents_per_kwh",
+            "export_excess_rate_cents_per_kwh",
+        ))
+        # A legacy tier is valid only as a complete, positive triplet.  In
+        # particular, never migrate an allowance paired with a zero credit.
+        if not all(value > 0 for value in tiers):
+            continue
+        period = conn.execute(
+            """SELECT id FROM tou_periods
+               WHERE plan_id=? AND direction='export' AND lower(label)='solar export'
+               LIMIT 1""",
+            (plan["id"],),
+        ).fetchone()
+        if period:
+            conn.execute(
+                """UPDATE tou_periods SET export_tier_kwh=?,
+                   export_tier_rate_cents_per_kwh=?, export_excess_rate_cents_per_kwh=? WHERE id=?""",
+                (*tiers, period["id"]),
+            )
+    set_setting(conn, EXPORT_TIER_TOU_MIGRATION_KEY, "1")
 
 
 def _migrate_origin_import_tou(conn: sqlite3.Connection) -> None:
@@ -314,12 +364,12 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO app_settings(key, value) VALUES('active_plan_id', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(plan_id),))
         conn.executemany(
             """
-            INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                *[(plan_id, "import", *period) for period in ORIGIN_IMPORT_PERIODS],
-                (plan_id, "export", "Solar export", 0, 1440, 3.0),
+                *[(plan_id, "import", *period, 0.0, 0.0, 0.0) for period in ORIGIN_IMPORT_PERIODS],
+                (plan_id, "export", "Solar export", 0, 1440, 3.0, 8.0, 8.0, 3.0),
             ],
         )
         conn.execute(

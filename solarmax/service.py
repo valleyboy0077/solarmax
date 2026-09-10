@@ -217,11 +217,14 @@ class SolarmaxService:
             conn.execute("DELETE FROM tou_periods WHERE plan_id = ?", (plan_id,))
             conn.executemany(
                 """
-                INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh)
+                    (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh,
+                     period.export_tier_kwh if period.direction == "export" else 0.0,
+                     period.export_tier_rate_cents_per_kwh if period.direction == "export" else 0.0,
+                     period.export_excess_rate_cents_per_kwh if period.direction == "export" else 0.0)
                     for period in validated
                 ],
             )
@@ -231,42 +234,46 @@ class SolarmaxService:
         plan_id: int,
         periods: list[dict[str, Any]],
         daily_supply_charge_cents: float,
-        export_tier_kwh: float,
-        export_tier_rate_cents_per_kwh: float,
-        export_excess_rate_cents_per_kwh: float,
+        export_tier_kwh: float | None = None,
+        export_tier_rate_cents_per_kwh: float | None = None,
+        export_excess_rate_cents_per_kwh: float | None = None,
     ) -> None:
         """Replace a plan's schedule and tariff values in one transaction."""
+
+        if any(value is not None for value in (
+            export_tier_kwh,
+            export_tier_rate_cents_per_kwh,
+            export_excess_rate_cents_per_kwh,
+        )):
+            raise ValueError(
+                "Plan-wide export tier fields are deprecated; configure tiers on export TOU periods"
+            )
 
         validated_periods = [
             TouPeriod(plan_id=plan_id, **{key: value for key, value in period.items() if key not in {"id", "plan_id"}})
             for period in periods
         ]
-        # Validate every tariff value before deleting existing rows.
-        tariff = PowerPlan(
-            provider_name="Existing",
-            plan_name="Existing",
-            daily_supply_charge_cents=daily_supply_charge_cents,
-            export_tier_kwh=export_tier_kwh,
-            export_tier_rate_cents_per_kwh=export_tier_rate_cents_per_kwh,
-            export_excess_rate_cents_per_kwh=export_excess_rate_cents_per_kwh,
-        )
+        # Validate the charge before deleting the existing schedule.
+        tariff = PowerPlan(provider_name="Existing", plan_name="Existing", daily_supply_charge_cents=daily_supply_charge_cents)
         with db_session(self.db_path) as conn:
             if not fetch_one(conn, "SELECT id FROM power_plans WHERE id=?", (plan_id,)):
                 raise KeyError(f"No power plan with id {plan_id}")
             conn.execute("DELETE FROM tou_periods WHERE plan_id = ?", (plan_id,))
             conn.executemany(
-                """INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh,
+                       export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
-                    (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh)
+                    (plan_id, period.direction, period.label, period.start_minute, period.end_minute, period.rate_cents_per_kwh,
+                     period.export_tier_kwh if period.direction == "export" else 0.0,
+                     period.export_tier_rate_cents_per_kwh if period.direction == "export" else 0.0,
+                     period.export_excess_rate_cents_per_kwh if period.direction == "export" else 0.0)
                     for period in validated_periods
                 ],
             )
             conn.execute(
-                """UPDATE power_plans SET daily_supply_charge_cents=?, export_tier_kwh=?,
-                   export_tier_rate_cents_per_kwh=?, export_excess_rate_cents_per_kwh=? WHERE id=?""",
-                (tariff.daily_supply_charge_cents, tariff.export_tier_kwh,
-                 tariff.export_tier_rate_cents_per_kwh, tariff.export_excess_rate_cents_per_kwh, plan_id),
+                "UPDATE power_plans SET daily_supply_charge_cents=? WHERE id=?",
+                (tariff.daily_supply_charge_cents, plan_id),
             )
 
     # ---------------------------------------------------------------------
@@ -548,13 +555,15 @@ class SolarmaxService:
         with db_session(self.db_path) as conn:
             settings = get_settings(conn)
             plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
+            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             if not plan_id:
-                return self._empty_bill_summary()
+                daily_site_totals = self._daily_site_totals(conn, [])
+                return self._empty_bill_summary(daily_site_totals, site_timezone)
             plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,))
             if plan is None:
-                return self._empty_bill_summary()
+                daily_site_totals = self._daily_site_totals(conn, [])
+                return self._empty_bill_summary(daily_site_totals, site_timezone)
             periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
-            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
             detailed = aggregate_bill_lines(
                 [
@@ -576,12 +585,7 @@ class SolarmaxService:
             grouped, today_metered = self._with_meter_reconciliation(
                 conn, detailed, site_timezone, periods,
             )
-            grouped = apply_daily_export_tier(
-                grouped,
-                float(plan.get("export_tier_kwh", 0.0) or 0.0),
-                float(plan.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
-                float(plan.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
-            )
+            grouped = apply_daily_export_tier(grouped)
             supply_charge_cents = float(plan.get("daily_supply_charge_cents", 0.0) or 0.0)
             supply_days = sorted({row["day"] for row in grouped})
             grouped.extend({
@@ -594,11 +598,13 @@ class SolarmaxService:
             } for day in supply_days)
             total = sum(float(row["amount_cents"]) for row in grouped if row["amount_cents"] is not None)
             daily = self.daily_bill_breakdown(conn, plan_id, site_timezone)
+            daily_site_totals = self._daily_site_totals(conn, grouped)
             return {
                 "plan": plan,
                 "total_cents": round(total, 2),
                 "rows": grouped,
                 "daily": daily,
+                "daily_site_totals": daily_site_totals,
                 "today_grid_import_kwh": round(today_metered["grid_import_kwh"], 4),
                 "today_grid_export_kwh": round(today_metered["grid_export_kwh"], 4),
                 "supply_charge_cents": supply_charge_cents,
@@ -631,13 +637,49 @@ class SolarmaxService:
         )
         detailed.extend(self._current_live_lines(conn, periods, site_timezone))
         grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone, periods)
-        plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id = ?", (plan_id,)) or {}
-        return apply_daily_export_tier(
-            grouped,
-            float(plan.get("export_tier_kwh", 0.0) or 0.0),
-            float(plan.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
-            float(plan.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
+        return apply_daily_export_tier(grouped)
+
+    @staticmethod
+    def _daily_site_totals(conn: sqlite3.Connection, bill_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Join authoritative local-day counters to the calculated daily bill.
+
+        The six energy values come only from persisted ``daily_counters`` for
+        enabled inverters.  Billing rows provide the money amount; they never
+        manufacture an energy total when meter data is absent.
+        """
+
+        rows = fetch_all(
+            conn,
+            """SELECT dc.day,
+                      COALESCE(SUM(dc.solar_kwh), 0.0) AS solar_kwh,
+                      COALESCE(SUM(dc.load_kwh), 0.0) AS load_kwh,
+                      COALESCE(SUM(dc.grid_import_kwh), 0.0) AS grid_import_kwh,
+                      COALESCE(SUM(dc.grid_export_kwh), 0.0) AS grid_export_kwh,
+                      COALESCE(SUM(dc.battery_charge_kwh), 0.0) AS battery_charge_kwh,
+                      COALESCE(SUM(dc.battery_discharge_kwh), 0.0) AS battery_discharge_kwh
+               FROM daily_counters dc
+               JOIN inverter_profiles ip ON ip.id = dc.inverter_id
+               WHERE ip.enabled = 1
+               GROUP BY dc.day
+               ORDER BY dc.day""",
         )
+        amounts: dict[str, float] = {}
+        for bill_row in bill_rows:
+            amount = bill_row.get("amount_cents")
+            if amount is not None:
+                day = str(bill_row["day"])
+                amounts[day] = amounts.get(day, 0.0) + float(amount)
+        return [
+            {
+                **{key: round(float(row[key]), 6) for key in (
+                    "solar_kwh", "load_kwh", "grid_import_kwh", "grid_export_kwh",
+                    "battery_charge_kwh", "battery_discharge_kwh",
+                )},
+                "day": row["day"],
+                "daily_bill_amount_cents": round(amounts.get(row["day"], 0.0), 2),
+            }
+            for row in rows
+        ]
 
     def dashboard_state(self) -> dict[str, Any]:
         """Build the dashboard payload consumed by the UI and MCP server.
@@ -798,12 +840,20 @@ class SolarmaxService:
                 raise KeyError(f"No inverter with id {inverter_id}")
 
     @staticmethod
-    def _empty_bill_summary() -> dict[str, Any]:
+    def _empty_bill_summary(
+        daily_site_totals: list[dict[str, Any]] | None = None,
+        site_timezone: str = "Australia/Brisbane",
+    ) -> dict[str, Any]:
         """Return the stable bill shape when no active plan can price data."""
 
+        daily_site_totals = daily_site_totals or []
+        today = datetime.now(ZoneInfo(site_timezone)).date().isoformat()
+        today_totals = next((row for row in daily_site_totals if row["day"] == today), {})
+
         return {
-            "plan": None, "total_cents": 0.0, "rows": [], "daily": [],
-            "today_grid_import_kwh": 0.0, "today_grid_export_kwh": 0.0,
+            "plan": None, "total_cents": 0.0, "rows": [], "daily": [], "daily_site_totals": daily_site_totals,
+            "today_grid_import_kwh": round(float(today_totals.get("grid_import_kwh", 0.0)), 4),
+            "today_grid_export_kwh": round(float(today_totals.get("grid_export_kwh", 0.0)), 4),
             "supply_charge_cents": 0.0, "supply_charge_days": 0,
             "billing_window_applied": False, "lines": [], "rollups": [],
         }
@@ -1065,7 +1115,7 @@ class SolarmaxService:
             "grid_export_kwh": float(row.get("grid_export_kwh", 0.0)),
         }
 
-    def _flat_day_rate(self, periods: list[dict[str, Any]], direction: str) -> float | None:
+    def _flat_day_period(self, periods: list[dict[str, Any]], direction: str) -> dict[str, Any] | None:
         """Return the rate when a direction has exactly one full-day period.
 
         A single 0-1440 period means the tariff is flat for that direction, so
@@ -1081,7 +1131,7 @@ class SolarmaxService:
         period = matching[0]
         if int(period["start_minute"]) != 0 or int(period["end_minute"]) != 1440:
             return None
-        return float(period["rate_cents_per_kwh"])
+        return period
 
     def _with_meter_reconciliation(
         self,
@@ -1137,8 +1187,9 @@ class SolarmaxService:
                     ]
                     difference = metered[column]
                 if difference > 0.000001:
-                    flat_rate = self._flat_day_rate(periods, direction)
-                    if flat_rate is not None:
+                    flat_period = self._flat_day_period(periods, direction)
+                    if flat_period is not None:
+                        flat_rate = float(flat_period["rate_cents_per_kwh"])
                         # A single flat full-day tariff makes the adjustment's
                         # price unambiguous, so bill it at that rate.  Export is
                         # a credit (negative amount), matching aggregate_bill_lines.
@@ -1152,6 +1203,10 @@ class SolarmaxService:
                             "kwh": round(difference, 4),
                             "rate_cents_per_kwh": flat_rate,
                             "amount_cents": round(amount, 3),
+                            "tou_period_id": flat_period.get("id"),
+                            "export_tier_kwh": float(flat_period.get("export_tier_kwh", 0.0) or 0.0),
+                            "export_tier_rate_cents_per_kwh": float(flat_period.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
+                            "export_excess_rate_cents_per_kwh": float(flat_period.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
                         })
                     else:
                         grouped.append({

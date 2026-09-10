@@ -71,6 +71,25 @@ def test_export_tier_applies_once_per_local_day_and_splits_crossing_line():
     assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in priced] == [(8.0, 8.0, -64.0), (2.0, 3.0, -6.0)]
 
 
+def test_same_day_flat_peak_export_keeps_its_rate_while_daytime_export_is_tiered():
+    periods = [
+        {"id": 10, "direction": "export", "label": "Peak battery export", "start_minute": 0, "end_minute": 540, "rate_cents_per_kwh": 20.0},
+        {"id": 11, "direction": "export", "label": "Daytime solar export", "start_minute": 540, "end_minute": 960, "rate_cents_per_kwh": 3.0, "export_tier_kwh": 8.0, "export_tier_rate_cents_per_kwh": 8.0, "export_excess_rate_cents_per_kwh": 3.0},
+    ]
+    snapshots = [
+        {"captured_at": datetime(2026, 1, 1, 1, tzinfo=ZoneInfo("Australia/Brisbane")).astimezone(timezone.utc), "grid_export_kwh": 2.0},
+        {"captured_at": datetime(2026, 1, 1, 10, tzinfo=ZoneInfo("Australia/Brisbane")).astimezone(timezone.utc), "grid_export_kwh": 10.0},
+    ]
+
+    rows = apply_daily_export_tier(rollup_by_day_and_period(aggregate_bill_lines(snapshots, periods)))
+
+    assert [(row["period_label"], row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in rows] == [
+        ("Daytime solar export (tier 1)", 8.0, 8.0, -64.0),
+        ("Daytime solar export (excess)", 2.0, 3.0, -6.0),
+        ("Peak battery export", 2.0, 20.0, -40.0),
+    ]
+
+
 def test_origin_import_migration_preserves_active_plan_metadata_and_export_tier(tmp_path):
     db_path = tmp_path / "solarmax.db"
     service = SolarmaxService(db_path)
@@ -107,6 +126,58 @@ def test_origin_import_migration_preserves_active_plan_metadata_and_export_tier(
     }
     assert imports == list(ORIGIN_IMPORT_PERIODS)
     assert exports == [("Solar export", 0, 1440, 3.0)]
+
+
+def test_export_tier_backfill_targets_solar_export_once_and_is_idempotent(tmp_path):
+    db_path = tmp_path / "solarmax.db"
+    SolarmaxService(db_path)
+    with db_session(db_path) as conn:
+        conn.execute("UPDATE power_plans SET export_tier_kwh=8, export_tier_rate_cents_per_kwh=8, export_excess_rate_cents_per_kwh=3 WHERE id=1")
+        conn.execute("UPDATE tou_periods SET export_tier_kwh=0, export_tier_rate_cents_per_kwh=0, export_excess_rate_cents_per_kwh=0 WHERE plan_id=1")
+        conn.execute("INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh) VALUES (1, 'export', 'Peak battery export', 0, 30, 20)")
+        conn.execute("DELETE FROM app_settings WHERE key='export_tiers_to_tou_v1_applied'")
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        tiers = [tuple(row) for row in conn.execute("SELECT label, export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND direction='export' ORDER BY label")]
+        assert tiers == [("Peak battery export", 0.0, 0.0, 0.0), ("Solar export", 8.0, 8.0, 3.0)]
+        conn.execute("UPDATE tou_periods SET export_tier_kwh=0, export_tier_rate_cents_per_kwh=0, export_excess_rate_cents_per_kwh=0 WHERE plan_id=1 AND label='Solar export'")
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        assert tuple(conn.execute("SELECT export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND label='Solar export'").fetchone()) == (0.0, 0.0, 0.0)
+
+
+def test_export_tier_backfill_skips_incomplete_legacy_tiers(tmp_path):
+    db_path = tmp_path / "solarmax.db"
+    SolarmaxService(db_path)
+    with db_session(db_path) as conn:
+        conn.execute("UPDATE power_plans SET export_tier_kwh=8, export_tier_rate_cents_per_kwh=0, export_excess_rate_cents_per_kwh=3 WHERE id=1")
+        conn.execute("UPDATE tou_periods SET export_tier_kwh=0, export_tier_rate_cents_per_kwh=0, export_excess_rate_cents_per_kwh=0 WHERE plan_id=1 AND label='Solar export'")
+        conn.execute("DELETE FROM app_settings WHERE key='export_tiers_to_tou_v1_applied'")
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        assert tuple(conn.execute("SELECT export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND label='Solar export'").fetchone()) == (0.0, 0.0, 0.0)
+
+
+def test_export_tier_backfill_no_match_is_marked_and_idempotent(tmp_path):
+    db_path = tmp_path / "solarmax.db"
+    SolarmaxService(db_path)
+    with db_session(db_path) as conn:
+        conn.execute("UPDATE power_plans SET export_tier_kwh=8, export_tier_rate_cents_per_kwh=8, export_excess_rate_cents_per_kwh=3 WHERE id=1")
+        conn.execute("DELETE FROM tou_periods WHERE plan_id=1 AND direction='export'")
+        conn.execute("DELETE FROM app_settings WHERE key='export_tiers_to_tou_v1_applied'")
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        assert conn.execute("SELECT 1 FROM tou_periods WHERE plan_id=1 AND direction='export'").fetchone() is None
+        assert conn.execute("SELECT value FROM app_settings WHERE key='export_tiers_to_tou_v1_applied'").fetchone()[0] == "1"
+        conn.execute("INSERT INTO tou_periods (plan_id, direction, label, start_minute, end_minute, rate_cents_per_kwh) VALUES (1, 'export', 'Solar export', 0, 1440, 3)")
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        assert tuple(conn.execute("SELECT export_tier_kwh, export_tier_rate_cents_per_kwh, export_excess_rate_cents_per_kwh FROM tou_periods WHERE plan_id=1 AND label='Solar export'").fetchone()) == (0.0, 0.0, 0.0)
 
 
 def test_source_change_is_a_zero_delta_baseline():
@@ -330,6 +401,72 @@ def _insert_daily_counter(conn, inverter_id: int, day: str, totals: tuple[float,
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0)""",
         (inverter_id, day, *totals),
     )
+
+
+def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(ZoneInfo("Australia/Brisbane")).date().isoformat()
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        _insert_daily_counter(conn, 1, today, (1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+        _insert_telemetry(conn, 1, now.isoformat(), (100, 200, 300, 400, 500, 600))
+
+    bill = service.current_bill_summary()
+    daily = next(row for row in bill["daily_site_totals"] if row["day"] == today)
+    assert daily == {
+        "day": today,
+        "solar_kwh": 1.0,
+        "load_kwh": 2.0,
+        "grid_import_kwh": 3.0,
+        "grid_export_kwh": 4.0,
+        "battery_charge_kwh": 5.0,
+        "battery_discharge_kwh": 6.0,
+        "daily_bill_amount_cents": -32.0,
+    }
+    overview = service.dashboard_state()["totals"]
+    assert overview == {
+        "solar_total_kwh": daily["solar_kwh"],
+        "load_total_kwh": daily["load_kwh"],
+        "grid_import_total_kwh": daily["grid_import_kwh"],
+        "grid_export_total_kwh": daily["grid_export_kwh"],
+        "battery_charge_total_kwh": daily["battery_charge_kwh"],
+        "battery_discharge_total_kwh": daily["battery_discharge_kwh"],
+    }
+
+
+def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, monkeypatch):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    monkeypatch.setattr("solarmax.main.service", service)
+    today = datetime.now(ZoneInfo("Australia/Brisbane")).date().isoformat()
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE app_settings SET value='' WHERE key='active_plan_id'")
+        _insert_daily_counter(conn, 1, today, (1.5, 2.5, 3.5, 4.5, 5.5, 6.5))
+
+    bill = service.current_bill_summary()
+
+    assert bill["plan"] is None
+    assert bill["total_cents"] == 0.0
+    assert bill["daily_site_totals"] == [{
+        "day": today,
+        "solar_kwh": 1.5,
+        "load_kwh": 2.5,
+        "grid_import_kwh": 3.5,
+        "grid_export_kwh": 4.5,
+        "battery_charge_kwh": 5.5,
+        "battery_discharge_kwh": 6.5,
+        "daily_bill_amount_cents": 0.0,
+    }]
+    assert bill["today_grid_import_kwh"] == 3.5
+    assert bill["today_grid_export_kwh"] == 4.5
+
+    from fastapi.testclient import TestClient
+    from solarmax.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/api/bill")
+    assert response.status_code == 200
+    assert response.json()["daily_site_totals"] == bill["daily_site_totals"]
 
 
 def test_dashboard_totals_use_daily_enabled_inverter_counters_not_lifetime_values(tmp_path):
