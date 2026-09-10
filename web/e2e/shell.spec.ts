@@ -48,7 +48,7 @@ test("keeps tablet navigation links named and exposes the active state", async (
   await expect(page.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-label", "Overview");
 });
 
-test("lays out Overview energy measurements as six desktop cards and wraps without overflow", async ({ page }) => {
+test("lays out Overview energy measurements as separate six-card groups and wraps without overflow", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
 
@@ -59,6 +59,10 @@ test("lays out Overview energy measurements as six desktop cards and wraps witho
     await expect(cards).toHaveCount(6);
     await expect(cards).toHaveText([/Solar generation/, /Load use/, /Grid import/, /Grid export/, /Battery charge/, /Battery discharge/]);
     await expect(section.locator(".overview-metric-grid")).toHaveCSS("grid-template-columns", /.+ .+ .+ .+ .+ .+/);
+    await expect(section.locator(".overview-metric-grid")).toHaveCSS("gap", "12px");
+    await expect(cards.first()).toHaveCSS("border-top-style", "solid");
+    await expect(cards.first()).toHaveCSS("border-top-width", "1px");
+    await expect(cards.first()).toHaveCSS("border-top-left-radius", "8px");
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
