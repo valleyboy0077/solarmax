@@ -47,3 +47,20 @@ test("keeps tablet navigation links named and exposes the active state", async (
   await expect(billing).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-label", "Overview");
 });
+
+test("lays out Overview energy measurements as six desktop cards and wraps without overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/");
+
+  const energySections = page.locator(".section").filter({ has: page.getByRole("heading", { name: /^(Live energy|Today)$/ }) });
+  await expect(energySections).toHaveCount(2);
+  for (const section of await energySections.all()) {
+    const cards = section.locator(".overview-metric-grid > .metric");
+    await expect(cards).toHaveCount(6);
+    await expect(cards).toHaveText([/Solar generation/, /Load use/, /Grid import/, /Grid export/, /Battery charge/, /Battery discharge/]);
+    await expect(section.locator(".overview-metric-grid")).toHaveCSS("grid-template-columns", /.+ .+ .+ .+ .+ .+/);
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
