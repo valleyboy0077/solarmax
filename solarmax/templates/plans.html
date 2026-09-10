@@ -31,15 +31,6 @@
         <label>Daily supply charge
           <input type="text" name="daily_supply_charge" value="${{ '%.2f'|format((plan.daily_supply_charge_cents or 0) / 100) }}" inputmode="decimal" placeholder="$0.00" />
         </label>
-        <label>Export tier threshold (kWh/day)
-          <input type="number" name="export_tier_kwh" min="0" step="0.001" value="{{ plan.export_tier_kwh or 0 }}" />
-        </label>
-        <label>Export tier 1 rate (c/kWh)
-          <input type="number" name="export_tier_rate_cents_per_kwh" min="0" step="0.01" value="{{ plan.export_tier_rate_cents_per_kwh or 0 }}" />
-        </label>
-        <label>Export excess rate (c/kWh)
-          <input type="number" name="export_excess_rate_cents_per_kwh" min="0" step="0.01" value="{{ plan.export_excess_rate_cents_per_kwh or 0 }}" />
-        </label>
         <textarea name="payload" rows="12">{{ tou_by_plan[plan.id] | tojson(indent=2) }}</textarea>
         <button type="submit">Save TOU periods</button>
       </form>
