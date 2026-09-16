@@ -62,6 +62,18 @@ describe("Plans & TOU tabs", () => {
     expect(screen.queryByLabelText("Edit TOU for")).not.toBeInTheDocument();
     expect(await screen.findByLabelText("Direction for Night Saver import")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show time picker" })).toBeInTheDocument();
+    const startInput = screen.getByLabelText("Start time for Night Saver import");
+    expect(startInput).toHaveClass("tou-start-time-input");
+    expect(startInput).toHaveAttribute("lang", "en-GB");
+    expect(startInput).toHaveAttribute("min", "00:00");
+    expect(startInput).toHaveAttribute("max", "23:30");
+    expect(startInput).toHaveAttribute("step", "1800");
+    expect(startInput).toHaveClass("tou-time-control");
+    const endControl = document.querySelector(".tou-end-time-control");
+    expect(endControl).toHaveClass("tou-time-control");
+    const rateInput = screen.getByLabelText("Rate for Night Saver import in cents per kilowatt hour");
+    expect(rateInput).toHaveClass("tou-rate-input");
+    expect(rateInput.closest("td")).toHaveClass("tou-rate-cell");
 
     await user.click(screen.getByRole("tab", { name: "Solar Saver" }));
 
@@ -224,7 +236,14 @@ describe("TOU end time control", () => {
       expect(pickerButton).toHaveAttribute("title", "Show time picker");
       expect(screen.queryByText("Pick")).not.toBeInTheDocument();
       expect(document.querySelectorAll(".tou-end-time-control > input:not(.tou-picker-input)")).toHaveLength(1);
-      expect(document.querySelector(".tou-picker-input")).toHaveAttribute("aria-hidden", "true");
+      const picker = document.querySelector(".tou-picker-input");
+      expect(picker).toHaveAttribute("aria-hidden", "true");
+      expect(picker).toHaveAttribute("lang", "en-GB");
+      expect(picker).toHaveAttribute("min", "00:00");
+      expect(picker).toHaveAttribute("max", "23:30");
+      expect(picker).toHaveAttribute("step", "1800");
+      expect(document.querySelector(".tou-end-time-control")).toHaveClass("tou-end-time-control");
+      expect(document.querySelector(".tou-time-picker-icon")).toHaveClass("tou-time-picker-icon");
 
       await user.click(pickerButton);
       expect(showPicker).toHaveBeenCalledTimes(1);
