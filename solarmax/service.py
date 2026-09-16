@@ -250,6 +250,26 @@ class SolarmaxService:
             if self._active_plan_id(conn) == plan_id:
                 self._schedule_billing_revision(conn, plan_id)
 
+    def correct_billing_revision_supply_charge(
+        self, plan_id: int, effective_from: str, cents: float
+    ) -> None:
+        """Correct one dated immutable revision without repricing other days."""
+        validated = PowerPlan(
+            provider_name="Existing", plan_name="Existing", daily_supply_charge_cents=cents
+        )
+        with db_session(self.db_path) as conn:
+            updated = conn.execute(
+                """UPDATE billing_plan_revisions
+                   SET daily_supply_charge_cents=?
+                   WHERE plan_id=? AND effective_from=?""",
+                (validated.daily_supply_charge_cents, plan_id, effective_from),
+            )
+            if not updated.rowcount:
+                raise KeyError(
+                    f"No billing revision for plan {plan_id} effective {effective_from}"
+                )
+        self.recalculate_rollup_amounts()
+
     def list_tou_periods(self, plan_id: int) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
             return fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ? ORDER BY direction, start_minute", (plan_id,))
