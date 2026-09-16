@@ -47,32 +47,79 @@ _POWER_READS = [
     (30037, "battery_kw"),      # plant_ess_power (signed)
 ]
 
-# (register address, normalized total key).  All counters are U64, four
-# big-endian registers, with a /100 gain to kWh.
+# (preferred register address, normalized total key). All counters are U64,
+# four big-endian registers, with a /100 gain to kWh.
 _LIFETIME_READS = [
     (30088, "solar_total_kwh"),
     (30094, "load_total_kwh"),
-    (30216, "grid_import_total_kwh"),
-    (30220, "grid_export_total_kwh"),
+    (30260, "grid_import_total_kwh"),
+    (30264, "grid_export_total_kwh"),
     (30200, "battery_charge_total_kwh"),
     (30204, "battery_discharge_total_kwh"),
 ]
 
+# Prefer the alternative plant grid lifetime registers when available. Keep
+# the original plant-meter registers as a per-counter fallback for older
+# firmware/register maps.
+_LIFETIME_FALLBACKS = {
+    "grid_import_total_kwh": (PLANT_UNIT_ID, 30216),
+    "grid_export_total_kwh": (PLANT_UNIT_ID, 30220),
+}
+
 # Direct local-day registers are more useful than a newly-created lifetime
-# baseline for the four metrics the device publishes this way. Grid import and
-# export have no equivalent direct-day register, so those remain local-midnight
-# deltas of the lifetime counters.
+# baseline for the metrics the device publishes this way. Prefer the validated
+# inverter daily PV register and retain the plant daily PV register as its
+# fallback. Keep plant daily load 247:30092: it is the validated plant-load
+# counter, while 247:30128 reports zero on this installation and must not be
+# used. Grid import and export have no equivalent direct-day register, so those
+# remain local-midnight deltas of the lifetime counters.
 _DAILY_READS = [
-    (PLANT_UNIT_ID, 30272, "solar"),
+    (1, 31509, "solar"),
     (PLANT_UNIT_ID, 30092, "load"),
     (1, 30566, "battery_charge"),
     (1, 30572, "battery_discharge"),
 ]
 
+_DAILY_FALLBACKS = {
+    "solar": (PLANT_UNIT_ID, 30272),
+}
+
 # Battery SOC and EMS mode are read for logging / future use but not stored in
 # the normalized reading yet.
 SOC_REGISTER = 30014          # plant_ess_soc, U16 /10
 EMS_MODE_REGISTER = 30003     # plant_ems_work_mode, U16
+
+
+def _read_registers_with_fallback(
+    ip_address: str,
+    unit_id: int,
+    address: int,
+    quantity: int,
+    fallback: tuple[int, int] | None = None,
+) -> list[int]:
+    """Read a preferred register and retry a fallback only if unavailable.
+
+    A zero is a valid counter value, so fallback selection is based on a
+    Modbus request failure rather than on the returned value.
+    """
+
+    candidates = [(unit_id, address)]
+    if fallback is not None:
+        candidates.append(fallback)
+
+    for index, (candidate_unit_id, candidate_address) in enumerate(candidates):
+        try:
+            return read_input_registers(ip_address, candidate_unit_id, candidate_address, quantity)
+        except ModbusError as exc:
+            if index == len(candidates) - 1:
+                raise
+            logger.info(
+                "SigenStor %s register %s:%s unavailable: %s; trying fallback %s:%s",
+                ip_address, candidate_unit_id, candidate_address, exc,
+                candidates[index + 1][0], candidates[index + 1][1],
+            )
+
+    raise AssertionError("register candidates must not be empty")
 
 
 class SigenStorEC20TPAUAdapter(InverterAdapter):
@@ -117,14 +164,22 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
         totals_kwh: dict[str, float] = {}
         for address, key in _LIFETIME_READS:
             totals_kwh[key] = decode_u64(
-                read_input_registers(ip_address, PLANT_UNIT_ID, address, 4)
+                _read_registers_with_fallback(
+                    ip_address,
+                    PLANT_UNIT_ID,
+                    address,
+                    4,
+                    _LIFETIME_FALLBACKS.get(key),
+                )
             ) / 100.0
 
         daily_totals_kwh: dict[str, float] = {}
         for unit_id, address, key in _DAILY_READS:
             try:
                 daily_totals_kwh[key] = decode_u32(
-                    read_input_registers(ip_address, unit_id, address, 2)
+                    _read_registers_with_fallback(
+                        ip_address, unit_id, address, 2, _DAILY_FALLBACKS.get(key),
+                    )
                 ) / 100.0
             except ModbusError as exc:
                 # A firmware/register-map difference must not make otherwise

@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from solarmax.billing import aggregate_bill_lines, apply_daily_export_tier, find_period, rollup_by_day_and_period
 from solarmax.inverters.base import InverterReading
+from solarmax.inverters.modbus import ModbusError
 from solarmax.inverters.sigenstor_ec_20_0_tp_au import SigenStorEC20TPAUAdapter
 from solarmax.service import SolarmaxService
 from solarmax.db import ORIGIN_IMPORT_PERIODS, db_session, init_db
@@ -713,8 +714,8 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
 
 def test_sigenstor_adapter_marks_lifetime_and_direct_daily_registers(monkeypatch):
     power = {30035: 8400, 30284: 3200, 30005: -200, 30037: 5200}
-    lifetime = {30088: 500000, 30094: 400000, 30216: 19643, 30220: 16721, 30200: 200000, 30204: 100000}
-    daily = {(247, 30272): 7552, (247, 30092): 4250, (1, 30566): 2100, (1, 30572): 1400}
+    lifetime = {30088: 500000, 30094: 400000, 30260: 19643, 30264: 16721, 30200: 200000, 30204: 100000}
+    daily = {(1, 31509): 7552, (247, 30092): 4250, (1, 30566): 2100, (1, 30572): 1400}
 
     def registers(value, quantity):
         raw = value & ((1 << (quantity * 16)) - 1)
@@ -747,13 +748,69 @@ def test_sigenstor_adapter_marks_lifetime_and_direct_daily_registers(monkeypatch
     }
     assert reads == [
         (247, 30035, 2), (247, 30284, 2), (247, 30005, 2), (247, 30037, 2),
-        (247, 30088, 4), (247, 30094, 4), (247, 30216, 4), (247, 30220, 4),
+        (247, 30088, 4), (247, 30094, 4), (247, 30260, 4), (247, 30264, 4),
         (247, 30200, 4), (247, 30204, 4),
-        (247, 30272, 2), (247, 30092, 2), (1, 30566, 2), (1, 30572, 2),
+        (1, 31509, 2), (247, 30092, 2), (1, 30566, 2), (1, 30572, 2),
         (247, 30014, 1), (247, 30003, 1),
     ]
+    assert (247, 30272) not in reads
+    assert (247, 30216) not in reads
+    assert (247, 30220) not in reads
+    assert (247, 30128) not in reads
     # Unit 1 has 30554/30560 "daily export/import" counters, but they are
     # inverter-terminal energy, not the plant grid sensor; the adapter must
-    # not substitute them for 247:30216/30220.
+    # not substitute them for the plant grid lifetime registers.
     assert (1, 30554, 2) not in reads
     assert (1, 30560, 2) not in reads
+
+
+def test_sigenstor_adapter_falls_back_when_preferred_registers_are_unavailable(monkeypatch):
+    power = {30035: 8400, 30284: 3200, 30005: -200, 30037: 5200}
+    lifetime = {30088: 500000, 30094: 400000, 30216: 19643, 30220: 16721, 30200: 200000, 30204: 100000}
+    daily = {(247, 30272): 7552, (247, 30092): 4250, (1, 30566): 2100, (1, 30572): 1400}
+
+    def registers(value, quantity):
+        raw = value & ((1 << (quantity * 16)) - 1)
+        return [(raw >> shift) & 0xFFFF for shift in range((quantity - 1) * 16, -1, -16)]
+
+    reads = []
+
+    def read_registers(host, unit_id, address, quantity):
+        reads.append((unit_id, address, quantity))
+        if (unit_id, address) in ((247, 30260), (247, 30264), (1, 31509)):
+            raise ModbusError("register unavailable")
+        if address in power:
+            return registers(power[address], quantity)
+        if address in lifetime:
+            return registers(lifetime[address], quantity)
+        if (unit_id, address) in daily:
+            return registers(daily[(unit_id, address)], quantity)
+        if address in (30014, 30003):
+            return [0]
+        raise AssertionError((unit_id, address, quantity))
+
+    monkeypatch.setattr("solarmax.inverters.sigenstor_ec_20_0_tp_au.read_input_registers", read_registers)
+    result = SigenStorEC20TPAUAdapter()._read_real("inverter", None)
+
+    assert result.lifetime is True
+    assert result.solar_total_kwh == 5000.0
+    assert result.load_total_kwh == 4000.0
+    assert result.grid_import_total_kwh == 196.43
+    assert result.grid_export_total_kwh == 167.21
+    assert result.battery_charge_total_kwh == 2000.0
+    assert result.battery_discharge_total_kwh == 1000.0
+    assert result.daily_totals_kwh == {
+        "solar": 75.52, "load": 42.5,
+        "battery_charge": 21.0, "battery_discharge": 14.0,
+    }
+    assert reads == [
+        (247, 30035, 2), (247, 30284, 2), (247, 30005, 2), (247, 30037, 2),
+        (247, 30088, 4), (247, 30094, 4),
+        (247, 30260, 4), (247, 30216, 4),
+        (247, 30264, 4), (247, 30220, 4),
+        (247, 30200, 4), (247, 30204, 4),
+        (1, 31509, 2), (247, 30272, 2), (247, 30092, 2),
+        (1, 30566, 2), (1, 30572, 2),
+        (247, 30014, 1), (247, 30003, 1),
+    ]
+    assert (247, 30128, 2) not in reads

@@ -1010,9 +1010,10 @@ class SolarmaxService:
         Grid deliberately has no unit-1 daily source.  Although the inverter
         exposes 30554/30560 as daily import/export registers, they measure the
         inverter AC terminal rather than the plant grid sensor on this site
-        (30554 tracked load plus grid export in the live probe).  Plant unit
-        247 lifetime 30216/30220 is the grid-meter source and needs a local
-        midnight baseline.
+        (30554 tracked load plus grid export in the live probe). The adapter
+        prefers plant-unit lifetime registers 30260/30264 and
+        falls back per counter to 30216/30220 for older register maps. Both
+        are grid-meter sources and need a local midnight baseline.
         """
 
         return {
