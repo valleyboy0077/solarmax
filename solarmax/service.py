@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .billing import aggregate_bill_lines, apply_daily_export_tier, bucket_start, find_period, rollup_by_day_and_period
+from .billing import aggregate_bill_lines, apply_daily_export_tier, bucket_start, current_billing_window, find_period, rollup_by_day_and_period
 from .db import (
     create_billing_plan_revision,
     db_session,
@@ -680,6 +680,12 @@ class SolarmaxService:
                 conn, detailed, site_timezone, fallback_periods,
             )
             grouped = apply_daily_export_tier(grouped)
+            billing_start, billing_end = current_billing_window(
+                datetime.now(ZoneInfo(site_timezone)).date(),
+                str(plan.get("billing_cycle") or "monthly"),
+                int(plan.get("billing_start_day") or 1),
+                int(plan.get("billing_start_month") or 1),
+            )
             daily = list(grouped)
             supply_days = sorted({row["day"] for row in grouped})
             for day in supply_days:
@@ -699,7 +705,11 @@ class SolarmaxService:
                     "amount_cents": round(supply_charge, 3),
                     "pricing_revision_id": revision_id,
                 })
-            total = sum(float(row["amount_cents"]) for row in grouped if row["amount_cents"] is not None)
+            current_cycle_rows = [
+                row for row in grouped
+                if billing_start <= date.fromisoformat(row["day"]) <= billing_end
+            ]
+            total = sum(float(row["amount_cents"]) for row in current_cycle_rows if row["amount_cents"] is not None)
             daily_site_totals = self._daily_site_totals(conn, grouped)
             return {
                 "plan": plan,
@@ -710,11 +720,12 @@ class SolarmaxService:
                 "today_grid_import_kwh": round(today_metered["grid_import_kwh"], 4),
                 "today_grid_export_kwh": round(today_metered["grid_export_kwh"], 4),
                 "supply_charge_cents": today_supply_charge,
-                "supply_charge_days": len(supply_days),
-                # Phase 0 deliberately preserves the legacy all-retained-
-                # telemetry bill. Billing-cycle configuration is not yet a
-                # filter, and this flag prevents clients from assuming it is.
-                "billing_window_applied": False,
+                "supply_charge_days": sum(
+                    date.fromisoformat(day) >= billing_start
+                    and date.fromisoformat(day) <= billing_end
+                    for day in supply_days
+                ),
+                "billing_window_applied": True,
                 "lines": [],
                 "rollups": [],
             }

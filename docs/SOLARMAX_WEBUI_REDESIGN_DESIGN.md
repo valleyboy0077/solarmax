@@ -33,7 +33,7 @@ The following corrections are contract hardening work, not new UI data or a Reac
 
 ### 1.2 Billing-window decision (Phase 0)
 
-Billing-cycle start fields remain configuration metadata in Phase 0. The current bill deliberately continues to include all retained billable telemetry rather than filtering to a calculated cycle window; changing that calculation would alter established billing results and requires a separately reviewed billing migration. The normalized bill contract exposes `billing_window_applied: false` so future clients cannot imply that cycle filtering occurred. No UI is added for this deferred behavior.
+Billing-cycle start fields determine the current bill window. Monthly plans run from the configured billing day in the previous/current month; quarterly plans use the configured anchor month and day. The normalized bill contract exposes `billing_window_applied: true` when an active plan is present.
 
 ## 2. Goals and non-goals
 
@@ -71,7 +71,7 @@ These are architectural invariants, not presentation preferences:
 7. Direct device-day counters and plant lifetime counters have different provenance. The UI may label the result but may not recompute it.
 8. AI mode is a persisted preference, not proof of automatic control. Applying an HTTP AI recommendation recalculates it from fresh weather at application time.
 9. Poll now invokes hardware polling. Periodic browser refresh must only read state.
-10. Billing-cycle fields are currently configuration metadata; Phase 0 explicitly defers cycle-window filtering, and the bill contract declares `billing_window_applied: false`.
+10. Billing-cycle fields determine the active monthly or quarterly window, and the bill contract declares `billing_window_applied: true` for an active plan.
 11. The MCP server shares the service layer and must continue working when page rendering changes.
 
 ## 4. Target architecture
@@ -713,7 +713,7 @@ Tasks:
 8. Add MCP regression tests and preserve existing service calls.
 9. Decide and document whether billing-cycle filtering is corrected in this migration or clearly deferred.
 
-Phase 0 decision: defer billing-cycle filtering and preserve all-retained-telemetry billing; expose `billing_window_applied: false` in the normalized bill response. This is not a UI feature and does not change the calculation.
+Billing-cycle decision: filter the current bill to the configured cycle window; expose `billing_window_applied: true` in the normalized bill response for an active plan. This keeps the Billing and Overview tallies on the same calculation.
 
 Gate:
 

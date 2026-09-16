@@ -1,7 +1,7 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from solarmax.billing import aggregate_bill_lines, apply_daily_export_tier, find_period, rollup_by_day_and_period
+from solarmax.billing import aggregate_bill_lines, apply_daily_export_tier, current_billing_window, find_period, rollup_by_day_and_period
 from solarmax.inverters.base import InverterReading
 from solarmax.inverters.modbus import ModbusError
 from solarmax.inverters.sigenstor_ec_20_0_tp_au import SigenStorEC20TPAUAdapter
@@ -62,6 +62,15 @@ def test_day_grouping_uses_aest_across_utc_midnight():
         "Australia/Brisbane",
     )
     assert rollup_by_day_and_period(lines, "Australia/Brisbane")[0]["day"] == "2026-01-02"
+
+
+def test_monthly_billing_window_uses_the_previous_billing_day():
+    assert current_billing_window(date(2026, 10, 11), "monthly", 13, 9) == (
+        date(2026, 9, 13), date(2026, 10, 11)
+    )
+    assert current_billing_window(date(2026, 10, 13), "monthly", 13, 9) == (
+        date(2026, 10, 13), date(2026, 10, 13)
+    )
 
 
 def test_export_tier_applies_once_per_local_day_and_splits_crossing_line():
@@ -364,20 +373,22 @@ def test_currency_parser_and_supply_charge_are_independent_of_import_kwh(tmp_pat
     assert _currency_to_cents("$1.78") == 178.0
     service = SolarmaxService(tmp_path / "solarmax.db")
     service.update_daily_supply_charge(1, 178)
+    captured = datetime.now(ZoneInfo("Australia/Brisbane")).replace(hour=10, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     with db_session(service.db_path) as conn:
         conn.execute(
             """INSERT INTO telemetry_rollups
                (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
                 grid_import_kwh, grid_export_kwh, battery_charge_kwh,
                 battery_discharge_kwh, amount_cents)
-               VALUES (1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:30:00+00:00', 0, 0, 2, 1, 0, 0, 0)"""
+               VALUES (1, ?, ?, 0, 0, 2, 1, 0, 0, 0)""",
+            (captured.isoformat(), (captured + timedelta(minutes=30)).isoformat()),
         )
     bill = service.current_bill_summary()
     imports = [row for row in bill["rows"] if row["direction"] == "import"]
     exports = [row for row in bill["rows"] if row["direction"] == "export"]
     assert sum(row["kwh"] for row in imports) == 2.0
     assert sum(row["kwh"] for row in exports) == 1.0
-    # 00:00 UTC is 10:00 AEST, within Origin's 09:00–16:00 off-peak window.
+    # 10:00 AEST is within Origin's 09:00–16:00 off-peak window.
     assert sum(row["amount_cents"] for row in imports) == 13.96
 
 
@@ -500,6 +511,8 @@ def test_plan_and_tou_changes_preserve_prior_day_and_price_tomorrow(tmp_path):
         insert_metered_rollup(conn, tomorrow)
     service.recalculate_rollup_amounts()
     after = service.current_bill_summary()
+    # Future telemetry remains visible in the history, but is not included in
+    # the current billing-cycle total.
     future_rows = [row for row in after["rows"] if row["day"] == tomorrow.isoformat()]
     future_import = next(row for row in future_rows if row["direction"] == "import")
     future_exports = [row for row in future_rows if row["direction"] == "export"]

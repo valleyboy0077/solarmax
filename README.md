@@ -2,6 +2,13 @@
 
 Solarmax is a Dockerized solar optimisation dashboard for homes and small sites with one or more inverters, batteries, and TOU electricity plans.
 
+## Overview
+
+![Solarmax Overview dashboard](docs/assets/overview.png)
+
+The screenshot shows the live React Overview dashboard, including current site
+operations, energy totals, the daily net bill chart, and the current bill.
+
 ## What it includes
 
 - Modern layered UI with 5 themes
@@ -58,3 +65,9 @@ For Hermes, wire it as a stdio MCP server in `~/.hermes/config.yaml` once you ha
 
 - The first version reads live telemetry from the SigenStor over Modbus TCP. When the inverter is unreachable, all live values show "—" until it responds again — no simulated data is ever shown.
 - The inverter profile/module design is intentionally pluggable so future inverter models can be added as separate modules.
+
+## Versioning
+
+The current release is recorded in [`VERSION`](VERSION) and follows Semantic
+Versioning (`MAJOR.MINOR.PATCH`). Release history and upgrade notes are kept in
+[`CHANGELOG.md`](CHANGELOG.md).

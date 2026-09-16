@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -52,15 +53,33 @@ def find_period(
 
 
 def current_billing_window(today: date, billing_cycle: str, start_day: int, start_month: int) -> tuple[date, date]:
-    """Approximate the current billing window for monthly or quarterly plans."""
+    """Return the current cycle, anchored to the configured billing day.
 
-    year = today.year
-    anchor = date(year, start_month, min(start_day, 28))
-    if today < anchor:
-        anchor = date(year - 1, start_month, min(start_day, 28))
+    Monthly plans use the billing day in the current local month, rolling back
+    one month when today's date is before that day.  ``start_month`` remains the
+    anchor month for quarterly plans.
+    """
+
+    billing_day = max(1, int(start_day))
+
+    def month_date(year: int, month: int) -> date:
+        return date(year, month, min(billing_day, calendar.monthrange(year, month)[1]))
+
+    def shift_months(value: date, months: int) -> date:
+        month_index = value.year * 12 + value.month - 1 + months
+        year, month_index = divmod(month_index, 12)
+        return month_date(year, month_index + 1)
+
     if billing_cycle == "quarterly":
-        while anchor <= today - timedelta(days=92):
-            anchor = date(anchor.year, ((anchor.month - 1 + 3) % 12) + 1, min(start_day, 28))
+        anchor = month_date(today.year, int(start_month))
+        if today < anchor:
+            anchor = shift_months(anchor, -12)
+        while shift_months(anchor, 3) <= today:
+            anchor = shift_months(anchor, 3)
+    else:
+        anchor = month_date(today.year, today.month)
+        if today < anchor:
+            anchor = shift_months(anchor, -1)
     return anchor, today
 
 

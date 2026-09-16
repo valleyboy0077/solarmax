@@ -1,6 +1,8 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { useState } from "react";
 import type { components } from "../api/generated";
 import { Chart, BillingRoute, EndTimeField, PlansRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
@@ -8,6 +10,8 @@ import { getFittingChartPointCount } from "./chart-layout";
 
 const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
 vi.mock("../api/client", () => apiMocks);
+
+const appCss = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
 
 afterEach(() => { cleanup(); apiMocks.apiDelete.mockReset(); apiMocks.apiGet.mockReset(); apiMocks.apiForm.mockReset(); apiMocks.apiPost.mockReset(); vi.restoreAllMocks(); });
 
@@ -47,6 +51,35 @@ describe("Billing page contract", () => {
 
     expect(await screen.findByText("Active plan")).toBeInTheDocument();
     expect(screen.getByText("Future Saver")).toBeInTheDocument();
+    expect(screen.queryByText("Supply charge")).not.toBeInTheDocument();
+  });
+
+  it("shows one amount row per day with TOU brackets and no rates", async () => {
+    apiMocks.apiGet.mockResolvedValueOnce({
+      plan: { id: 1, provider_name: "Provider", plan_name: "Future Saver", billing_cycle: "monthly", billing_start_day: 1, billing_start_month: 1, daily_supply_charge_cents: 0, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "" },
+      total_cents: 1234, rows: [
+        { day: "2026-09-01", period_label: "Off-peak", direction: "import", kwh: 2, rate_cents_per_kwh: 10, amount_cents: 200, unpriced: false },
+        { day: "2026-09-01", period_label: "Peak", direction: "import", kwh: 1, rate_cents_per_kwh: 30, amount_cents: 300, unpriced: false },
+        { day: "2026-09-02", period_label: "Off-peak", direction: "import", kwh: 3, rate_cents_per_kwh: 10, amount_cents: 300, unpriced: false },
+      ], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false,
+    } satisfies components["schemas"]["BillSummaryResponse"]);
+
+    render(<BillingRoute />);
+
+    const table = await screen.findByRole("table", { name: "Billing amounts by day and TOU bracket" });
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(2);
+    expect(table).toHaveTextContent("Off-peak");
+    expect(table).toHaveTextContent("Peak");
+    expect(table).toHaveTextContent("$2.00");
+    expect(table).toHaveTextContent("$3.00");
+    expect(table).toHaveTextContent("Total");
+    expect(table).toHaveTextContent("Day date");
+    expect(table).toHaveTextContent("Total for day");
+    expect(table.querySelectorAll("thead th")).toHaveLength(5);
+    expect(table.querySelectorAll("tbody tr")[0]).toHaveTextContent("-$5.00");
+    expect(table.querySelectorAll("tbody tr")[1]).toHaveTextContent("-$3.00");
+    expect(table).not.toHaveTextContent("c/kWh");
+    expect(table).not.toHaveTextContent("Energy");
   });
 });
 
@@ -167,22 +200,31 @@ describe("Daily net bill chart", () => {
       { day: "2026-09-01", amount_cents: 80 },
       { day: "2026-09-02", amount_cents: 1234 },
       { day: "2026-09-03", amount_cents: -5678 },
+      { day: "2026-09-04", amount_cents: 0 },
     ] satisfies components["schemas"]["ChartResponse"]["points"];
     const { container } = render(<Chart points={points} />);
 
     const chart = screen.getByRole("img", { name: /Daily net bill chart/ });
     const columns = [...chart.querySelectorAll(".chart-column")];
-    expect(columns).toHaveLength(3);
-    expect(chart.querySelectorAll(".chart-bar-area")).toHaveLength(3);
-    expect(chart.querySelectorAll(".chart-bar")).toHaveLength(3);
-    expect(chart.querySelectorAll(".chart-date")).toHaveLength(3);
-    expect(chart.querySelectorAll(".chart-amount")).toHaveLength(3);
+    expect(columns).toHaveLength(4);
+    expect(chart.querySelectorAll(".chart-bar-area")).toHaveLength(4);
+    expect(chart.querySelectorAll(".chart-bar")).toHaveLength(4);
+    expect(chart.querySelectorAll(".chart-date")).toHaveLength(4);
+    expect(chart.querySelectorAll(".chart-amount")).toHaveLength(4);
+    const bars = [...chart.querySelectorAll(".chart-bar")];
+    expect(bars[0]).toHaveClass("chart-bar", "positive");
+    expect(bars[1]).toHaveClass("chart-bar", "positive");
+    expect(bars[2]).toHaveClass("chart-bar", "negative", "credit");
+    expect(bars[3]).toHaveClass("chart-bar", "neutral");
+    expect(bars[3]).not.toHaveClass("positive", "negative", "credit");
     expect(chart).toHaveTextContent("$0.80");
     expect(chart).toHaveTextContent("$12.34");
     expect(chart).toHaveTextContent("-$56.78");
+    expect(chart).toHaveTextContent("$0.00");
     expect(screen.getByText("01/09")).toBeInTheDocument();
     expect(screen.getByText("02/09")).toBeInTheDocument();
     expect(screen.getByText("03/09")).toBeInTheDocument();
+    expect(screen.getByText("04/09")).toBeInTheDocument();
     for (const column of columns) {
       expect(column.children[0]).toHaveClass("chart-bar-area");
       expect(column.children[1]).toHaveClass("chart-date");
@@ -190,9 +232,11 @@ describe("Daily net bill chart", () => {
     }
     expect(container.querySelector(".chart-bar.credit")).toHaveAttribute("title", "03/09/2026 -$56.78");
     expect(container.querySelectorAll(".chart-amount")[0]).toHaveAttribute("title", "$0.80");
-    expect(container.querySelectorAll(".chart-data tbody tr")).toHaveLength(3);
+    expect(container.querySelectorAll(".chart-data tbody tr")).toHaveLength(4);
     expect(container.querySelector(".chart-data tbody")).toHaveTextContent("03/09/2026");
     expect(container.querySelector(".chart-data tbody")).toHaveTextContent("-$56.78");
+    expect(appCss).toMatch(/\.chart-bar\.negative\s*\{\s*background:var\(--danger\);\s*\}/);
+    expect(appCss).toMatch(/\.chart-bar\.positive\s*\{\s*background:var\(--success\);\s*\}/);
   });
 });
 
