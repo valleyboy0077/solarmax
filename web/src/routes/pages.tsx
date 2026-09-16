@@ -118,6 +118,20 @@ export function InvertersRoute() {
 
 function time(value: number) { return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`; }
 function minutes(value: string) { if (value === "24:00") return 1440; const [h, m] = value.split(":").map(Number); return h * 60 + m; }
+function isValidTimeText(value: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return false;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour <= 23 && minute <= 59 || hour === 24 && minute === 0;
+}
+function pickerParts(value: number) {
+  const bounded = Math.max(0, Math.min(value, 1440));
+  const hour = Math.floor(bounded / 60);
+  return { hour, minute: hour === 24 ? 0 : bounded % 60 === 30 ? 30 : 0 };
+}
+const pickerHours = Array.from({ length: 25 }, (_, hour) => String(hour).padStart(2, "0"));
+const pickerMinutes = ["00", "30"] as const;
 export function TouTierInputs({ period, update }: { period: Tou; update: (field: keyof Tou, value: number) => void }) {
   if (period.direction !== "export") return <td colSpan={3} aria-label={`No export tiers for ${period.label}`}>—</td>;
   return <><td><input aria-label={`Tier allowance for ${period.label}`} type="number" min="0" step="0.001" value={period.export_tier_kwh} onChange={(e) => update("export_tier_kwh", Number(e.target.value))} /></td><td><input aria-label={`Tier-one rate for ${period.label}`} type="number" min="0" step="0.01" value={period.export_tier_rate_cents_per_kwh} onChange={(e) => update("export_tier_rate_cents_per_kwh", Number(e.target.value))} /></td><td><input aria-label={`Excess rate for ${period.label}`} type="number" min="0" step="0.01" value={period.export_excess_rate_cents_per_kwh} onChange={(e) => update("export_excess_rate_cents_per_kwh", Number(e.target.value))} /></td></>;
@@ -127,18 +141,57 @@ export function TouTableColumnGroup() {
   return <colgroup><col className="tou-direction-column" /><col className="tou-label-column" /><col className="tou-time-column" /><col className="tou-time-column" /><col className="tou-rate-column" /><col className="tou-tier-allowance-column" /><col className="tou-rate-column" /><col className="tou-rate-column" /><col className="tou-actions-column" /></colgroup>;
 }
 
+function TouTimePicker({ period, field, update }: { period: Tou; field: "start_minute" | "end_minute"; update: (value: number) => void }) {
+  const isStart = field === "start_minute";
+  const fieldLabel = isStart ? "Start" : "End";
+  const inputClass = isStart ? "tou-time-control tou-start-time-input" : "tou-time-control";
+  const controlClass = isStart ? "tou-start-time-control" : "tou-end-time-control";
+  const pickerLabel = `Choose ${fieldLabel.toLowerCase()} time for ${period.label}`;
+  const dialogId = `${field}-time-picker-${period.id}`;
+  const controlRef = useRef<HTMLSpanElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(() => time(period[field]));
+  const [position, setPosition] = useState({ top: 0, left: 16 });
+  const selectedValue = period[field];
+  const { hour, minute } = pickerParts(selectedValue);
+  useEffect(() => { setDraft(time(selectedValue)); }, [selectedValue]);
+  useEffect(() => {
+    if (!open) return;
+    dialogRef.current?.focus();
+    const updatePosition = () => {
+      const rect = controlRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = 320;
+      setPosition({ top: rect.bottom + 8, left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)) });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => { window.removeEventListener("resize", updatePosition); window.removeEventListener("scroll", updatePosition, true); };
+  }, [open]);
+  useEffect(() => { if (!open) controlRef.current?.querySelector<HTMLButtonElement>("button")?.focus(); }, [open]);
+  const selectHour = (nextHour: string) => update(Number(nextHour) * 60 + (Number(nextHour) === 24 ? 0 : minute));
+  const selectMinute = (nextMinute: string) => { if (hour === 24 && nextMinute === "30") return; update(hour * 60 + Number(nextMinute)); };
+  return <span ref={controlRef} className={`tou-time-control ${controlClass}`}>
+    <input className={inputClass} aria-label={`${fieldLabel} time for ${period.label}`} type="text" inputMode="numeric" pattern="(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)" placeholder="HH:MM" value={draft} onChange={(event) => { const value = event.target.value; setDraft(value); if (isValidTimeText(value)) update(minutes(value)); }} />
+    <Button className="tou-time-picker-button" type="button" aria-label="Show time picker" title="Show time picker" aria-expanded={open} aria-controls={open ? dialogId : undefined} onClick={() => setOpen(true)}><Clock className="tou-time-picker-icon" aria-hidden="true" size={16} /></Button>
+    {open && <div ref={dialogRef} id={dialogId} className="tou-time-picker-popover" role="dialog" aria-modal="true" aria-labelledby={`${dialogId}-title`} tabIndex={-1} style={{ top: position.top, left: position.left }} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
+      <div className="tou-time-picker-heading"><strong id={`${dialogId}-title`}>{pickerLabel}</strong><Button type="button" className="tou-time-picker-close" onClick={() => setOpen(false)}>Close</Button></div>
+      <div className="tou-time-picker-fields">
+        <label><span>Hour</span><select aria-label="Hour" value={String(hour).padStart(2, "0")} onChange={(event) => selectHour(event.target.value)}>{pickerHours.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+        <label><span>Minute</span><select aria-label="Minute" value={String(minute).padStart(2, "0")} onChange={(event) => selectMinute(event.target.value)}>{pickerMinutes.map((value) => <option key={value} value={value} disabled={hour === 24 && value === "30"}>{value}</option>)}</select></label>
+      </div>
+    </div>}
+  </span>;
+}
+
+export function StartTimeField({ period, update }: { period: Tou; update: (value: number) => void }) {
+  return <TouTimePicker period={period} field="start_minute" update={update} />;
+}
+
 export function EndTimeField({ period, update }: { period: Tou; update: (value: number) => void }) {
-  const pickerId = `end-time-picker-${period.id}`;
-  const pickerRef = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState(() => time(period.end_minute));
-  useEffect(() => { setDraft(time(period.end_minute)); }, [period.end_minute]);
-  const openPicker = () => {
-    const picker = pickerRef.current;
-    if (!picker) return;
-    if (picker.showPicker) picker.showPicker();
-    else picker.click();
-  };
-  return <span className="tou-time-control tou-end-time-control"><input aria-label={`End time for ${period.label}`} type="text" inputMode="numeric" pattern="(?:[01]\d|2[0-4]):[0-5]\d" placeholder="HH:MM" value={draft} onChange={(e) => { const value = e.target.value; setDraft(value); if (/^(?:[01]\d|2[0-4]):[0-5]\d$/.test(value)) update(minutes(value)); }} /><input ref={pickerRef} id={pickerId} className="tou-picker-input" aria-hidden="true" tabIndex={-1} type="time" lang="en-GB" min="00:00" max="23:30" step="1800" value={time(Math.min(period.end_minute, 1410))} onChange={(e) => update(minutes(e.target.value))} /><Button className="tou-time-picker-button" type="button" aria-label="Show time picker" title="Show time picker" onClick={openPicker}><Clock className="tou-time-picker-icon" aria-hidden="true" size={16} /></Button></span>;
+  return <TouTimePicker period={period} field="end_minute" update={update} />;
 }
 
 function TouEditor({ plan, onSaved }: { plan: Plan; onSaved: () => Promise<void> }) {
@@ -149,7 +202,7 @@ function TouEditor({ plan, onSaved }: { plan: Plan; onSaved: () => Promise<void>
   const ready = resource.data?.plan_id === plan.id;
   if (resource.error && !ready) return <ErrorState>Unable to load the TOU schedule. <button className="link-button" onClick={() => void resource.reload()}>Try again</button></ErrorState>;
   if ((resource.loading && !ready) || !ready) return <LoadingState label="Loading TOU schedule" />;
-  return <section className="section tou-editor"><div className="section-heading"><div><h2>TOU schedule</h2><p>Times must be 30-minute aligned. Export rows may use a daily tier; zero values keep the ordinary rate.</p></div></div><div className="table-wrap"><table className="tou-table"><TouTableColumnGroup /><thead><tr><th>Direction</th><th>Label</th><th>Start</th><th>End</th><th>Rate (c/kWh)</th><th>Tier allowance (kWh/day)</th><th>Tier-one (c/kWh)</th><th>Excess (c/kWh)</th><th>Actions</th></tr></thead><tbody>{periods.map((period, index) => <tr key={period.id}><td><select aria-label={`Direction for ${period.label}`} value={period.direction} onChange={(e) => update(index, "direction", e.target.value)}><option value="import">Import</option><option value="export">Export</option></select></td><td><input aria-label={`Label for TOU period ${index + 1}`} value={period.label} onChange={(e) => update(index, "label", e.target.value)} /></td><td><input className="tou-time-control tou-start-time-input" aria-label={`Start time for ${period.label}`} type="time" lang="en-GB" min="00:00" max="23:30" step="1800" value={time(period.start_minute)} onChange={(e) => update(index, "start_minute", minutes(e.target.value))} /></td><td><EndTimeField period={period} update={(value) => update(index, "end_minute", value)} /></td><td className="tou-rate-cell"><input className="tou-rate-input" aria-label={`Rate for ${period.label} in cents per kilowatt hour`} type="number" min="0" step="0.01" value={period.rate_cents_per_kwh} onChange={(e) => update(index, "rate_cents_per_kwh", Number(e.target.value))} /></td><TouTierInputs period={period} update={(field, value) => update(index, field, value)} /><td><Button type="button" aria-label={`Remove ${period.label}`} onClick={() => { if (window.confirm(`Remove the ${period.label} period? It will be deleted when you save the complete schedule.`)) setPeriods((all) => all.filter((_, i) => i !== index)); }}><Trash2 aria-hidden="true" size={16} /></Button></td></tr>)}</tbody></table></div><div className="inline-actions"><Button onClick={() => setPeriods((all) => [...all, { id: Date.now(), plan_id: plan.id, direction: "import", label: "New period", start_minute: 0, end_minute: 30, rate_cents_per_kwh: 0, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0 }])}><Plus size={16} /> Add period</Button><Button variant="primary" onClick={() => void save()} disabled={pending}>{pending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save TOU schedule</Button></div><Notice message={message} error={message !== "TOU schedule saved."} /></section>;
+  return <section className="section tou-editor"><div className="section-heading"><div><h2>TOU schedule</h2><p>Times must be 30-minute aligned. Export rows may use a daily tier; zero values keep the ordinary rate.</p></div></div><div className="table-wrap"><table className="tou-table"><TouTableColumnGroup /><thead><tr><th>Direction</th><th>Label</th><th>Start</th><th>End</th><th>Rate (c/kWh)</th><th>Tier allowance (kWh/day)</th><th>Tier-one (c/kWh)</th><th>Excess (c/kWh)</th><th>Actions</th></tr></thead><tbody>{periods.map((period, index) => <tr key={period.id}><td><select aria-label={`Direction for ${period.label}`} value={period.direction} onChange={(e) => update(index, "direction", e.target.value)}><option value="import">Import</option><option value="export">Export</option></select></td><td><input aria-label={`Label for TOU period ${index + 1}`} value={period.label} onChange={(e) => update(index, "label", e.target.value)} /></td><td><StartTimeField period={period} update={(value) => update(index, "start_minute", value)} /></td><td><EndTimeField period={period} update={(value) => update(index, "end_minute", value)} /></td><td className="tou-rate-cell"><input className="tou-rate-input" aria-label={`Rate for ${period.label} in cents per kilowatt hour`} type="number" min="0" step="0.01" value={period.rate_cents_per_kwh} onChange={(e) => update(index, "rate_cents_per_kwh", Number(e.target.value))} /></td><TouTierInputs period={period} update={(field, value) => update(index, field, value)} /><td><Button type="button" aria-label={`Remove ${period.label}`} onClick={() => { if (window.confirm(`Remove the ${period.label} period? It will be deleted when you save the complete schedule.`)) setPeriods((all) => all.filter((_, i) => i !== index)); }}><Trash2 aria-hidden="true" size={16} /></Button></td></tr>)}</tbody></table></div><div className="inline-actions"><Button onClick={() => setPeriods((all) => [...all, { id: Date.now(), plan_id: plan.id, direction: "import", label: "New period", start_minute: 0, end_minute: 30, rate_cents_per_kwh: 0, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0 }])}><Plus size={16} /> Add period</Button><Button variant="primary" onClick={() => void save()} disabled={pending}>{pending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save TOU schedule</Button></div><Notice message={message} error={message !== "TOU schedule saved."} /></section>;
 }
 
 function PlanForm({ plan, onSaved, onDeleted }: { plan?: Plan; onSaved: () => Promise<void>; onDeleted?: () => Promise<void> }) {

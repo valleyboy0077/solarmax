@@ -1,8 +1,9 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import type { components } from "../api/generated";
-import { Chart, BillingRoute, EndTimeField, PlansRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { Chart, BillingRoute, EndTimeField, PlansRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
 const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
@@ -61,13 +62,10 @@ describe("Plans & TOU tabs", () => {
     expect(screen.getByRole("tab", { name: "Night Saver" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByLabelText("Edit TOU for")).not.toBeInTheDocument();
     expect(await screen.findByLabelText("Direction for Night Saver import")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show time picker" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Show time picker" })).toHaveLength(2);
+    expect(document.querySelectorAll('input[type="time"]')).toHaveLength(0);
     const startInput = screen.getByLabelText("Start time for Night Saver import");
     expect(startInput).toHaveClass("tou-start-time-input");
-    expect(startInput).toHaveAttribute("lang", "en-GB");
-    expect(startInput).toHaveAttribute("min", "00:00");
-    expect(startInput).toHaveAttribute("max", "23:30");
-    expect(startInput).toHaveAttribute("step", "1800");
     expect(startInput).toHaveClass("tou-time-control");
     const endControl = document.querySelector(".tou-end-time-control");
     expect(endControl).toHaveClass("tou-time-control");
@@ -225,32 +223,70 @@ describe("TOU end time control", () => {
     export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0,
   };
 
-  it("uses an exact clock affordance and opens the native picker", async () => {
-    const showPicker = vi.fn();
-    const originalShowPicker = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "showPicker");
-    Object.defineProperty(HTMLInputElement.prototype, "showPicker", { configurable: true, value: showPicker });
-    try {
-      const user = userEvent.setup();
-      render(<EndTimeField period={period} update={vi.fn()} />);
-      const pickerButton = screen.getByRole("button", { name: "Show time picker" });
+  it("uses the same controlled picker for Start and End with the exact clock affordance", async () => {
+    const user = userEvent.setup();
+    render(<div><StartTimeField period={period} update={vi.fn()} /><EndTimeField period={period} update={vi.fn()} /></div>);
+    const pickerButtons = screen.getAllByRole("button", { name: "Show time picker" });
+    expect(pickerButtons).toHaveLength(2);
+    for (const pickerButton of pickerButtons) {
       expect(pickerButton).toHaveAttribute("title", "Show time picker");
-      expect(screen.queryByText("Pick")).not.toBeInTheDocument();
-      expect(document.querySelectorAll(".tou-end-time-control > input:not(.tou-picker-input)")).toHaveLength(1);
-      const picker = document.querySelector(".tou-picker-input");
-      expect(picker).toHaveAttribute("aria-hidden", "true");
-      expect(picker).toHaveAttribute("lang", "en-GB");
-      expect(picker).toHaveAttribute("min", "00:00");
-      expect(picker).toHaveAttribute("max", "23:30");
-      expect(picker).toHaveAttribute("step", "1800");
-      expect(document.querySelector(".tou-end-time-control")).toHaveClass("tou-end-time-control");
-      expect(document.querySelector(".tou-time-picker-icon")).toHaveClass("tou-time-picker-icon");
-
-      await user.click(pickerButton);
-      expect(showPicker).toHaveBeenCalledTimes(1);
-    } finally {
-      if (originalShowPicker) Object.defineProperty(HTMLInputElement.prototype, "showPicker", originalShowPicker);
-      else Reflect.deleteProperty(HTMLInputElement.prototype, "showPicker");
+      expect(pickerButton).toHaveClass("tou-time-picker-button");
+      expect(pickerButton.querySelector(".tou-time-picker-icon")).toBeInTheDocument();
     }
+    expect(document.querySelectorAll('input[type="time"]')).toHaveLength(0);
+
+    await user.click(pickerButtons[0]);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(pickerButtons[1]);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("offers 00 through 24 hours and only 00 and 30 minutes", async () => {
+    const user = userEvent.setup();
+    render(<EndTimeField period={period} update={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Show time picker" }));
+    const hour = screen.getByRole("combobox", { name: "Hour" });
+    const minute = screen.getByRole("combobox", { name: "Minute" });
+    const hourOptions = [...hour.querySelectorAll("option")].map((option) => option.textContent);
+    const minuteOptions = [...minute.querySelectorAll("option")].map((option) => option.textContent);
+    expect(hourOptions).toHaveLength(25);
+    expect(hourOptions).toContain("00");
+    expect(hourOptions).toContain("24");
+    expect(minuteOptions).toEqual(["00", "30"]);
+  });
+
+  it("prevents the invalid 24:30 combination", async () => {
+    const update = vi.fn();
+    const user = userEvent.setup();
+    function ControlledField() {
+      const [endMinute, setEndMinute] = useState(1410);
+      const updateValue = (value: number) => { update(value); setEndMinute(value); };
+      return <EndTimeField period={{ ...period, end_minute: endMinute }} update={updateValue} />;
+    }
+    render(<ControlledField />);
+    await user.click(screen.getByRole("button", { name: "Show time picker" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Hour" }), "24");
+    const minute = screen.getByRole("combobox", { name: "Minute" });
+    expect(minute).toHaveValue("00");
+    expect(screen.getByRole("option", { name: "30" })).toBeDisabled();
+    expect(update).toHaveBeenLastCalledWith(1440);
+    await user.selectOptions(minute, "30");
+    expect(update).toHaveBeenLastCalledWith(1440);
+  });
+
+  it("updates the field when a picker value is selected", async () => {
+    const user = userEvent.setup();
+    function ControlledField() {
+      const [endMinute, setEndMinute] = useState(0);
+      return <EndTimeField period={{ ...period, end_minute: endMinute }} update={setEndMinute} />;
+    }
+    render(<ControlledField />);
+    await user.click(screen.getByRole("button", { name: "Show time picker" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Hour" }), "08");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Minute" }), "30");
+    expect(screen.getByRole("textbox", { name: "End time for Overnight" })).toHaveValue("08:30");
   });
 
   it("displays and accepts the end-of-day value 24:00", async () => {
@@ -263,6 +299,10 @@ describe("TOU end time control", () => {
     await user.type(endInput, "24:00");
 
     expect(endInput).toHaveValue("24:00");
+    expect(update).toHaveBeenLastCalledWith(1440);
+
+    await user.clear(endInput);
+    await user.type(endInput, "24:30");
     expect(update).toHaveBeenLastCalledWith(1440);
   });
 });
