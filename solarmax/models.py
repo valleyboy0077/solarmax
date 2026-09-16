@@ -155,6 +155,8 @@ class DailySiteTotal(BaseModel):
     """Authoritative local-day energy totals and the corresponding bill."""
 
     day: date
+    plan_id: int | None = None
+    plan_name: str | None = None
     solar_kwh: float
     load_kwh: float
     grid_import_kwh: float

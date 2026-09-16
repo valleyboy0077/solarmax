@@ -719,8 +719,7 @@ class SolarmaxService:
         grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone, periods)
         return apply_daily_export_tier(grouped)
 
-    @staticmethod
-    def _daily_site_totals(conn: sqlite3.Connection, bill_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _daily_site_totals(self, conn: sqlite3.Connection, bill_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Join authoritative local-day counters to the calculated daily bill.
 
         The six energy values come only from persisted ``daily_counters`` for
@@ -744,13 +743,25 @@ class SolarmaxService:
                ORDER BY dc.day""",
         )
         amounts: dict[str, float] = {}
+        plans: dict[str, dict[str, Any]] = {}
         for bill_row in bill_rows:
             amount = bill_row.get("amount_cents")
             if amount is not None:
                 day = str(bill_row["day"])
                 amounts[day] = amounts.get(day, 0.0) + float(amount)
+            revision_id = bill_row.get("pricing_revision_id")
+            if revision_id is not None:
+                revision = fetch_one(
+                    conn,
+                    "SELECT plan_id, plan_name FROM billing_plan_revisions WHERE id=?",
+                    (revision_id,),
+                )
+                if revision is not None:
+                    plans.setdefault(str(bill_row["day"]), dict(revision))
         return [
             {
+                "plan_id": plans.get(str(row["day"]), {}).get("plan_id"),
+                "plan_name": plans.get(str(row["day"]), {}).get("plan_name"),
                 **{key: round(float(row[key]), 6) for key in (
                     "solar_kwh", "load_kwh", "grid_import_kwh", "grid_export_kwh",
                     "battery_charge_kwh", "battery_discharge_kwh",

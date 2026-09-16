@@ -422,6 +422,8 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
     daily = next(row for row in bill["daily_site_totals"] if row["day"] == today)
     assert daily == {
         "day": today,
+        "plan_id": 1,
+        "plan_name": "Solarmax Starter",
         "solar_kwh": 1.0,
         "load_kwh": 2.0,
         "grid_import_kwh": 3.0,
@@ -490,6 +492,7 @@ def test_plan_and_tou_changes_preserve_prior_day_and_price_tomorrow(tmp_path):
     unchanged_daily = next(row for row in unchanged["daily_site_totals"] if row["day"] == yesterday.isoformat())
     assert unchanged["plan"]["plan_name"] == "Future Saver"
     assert unchanged_daily["daily_bill_amount_cents"] == before_daily["daily_bill_amount_cents"]
+    assert unchanged_daily["plan_name"] == "Solarmax Starter"
     assert next(row for row in service.chart_points() if row["day"] == yesterday.isoformat()) == before_chart
     assert next(row for row in unchanged["rows"] if row["day"] == yesterday.isoformat() and row["direction"] == "fixed")["amount_cents"] == 0.0
 
@@ -510,6 +513,7 @@ def test_plan_and_tou_changes_preserve_prior_day_and_price_tomorrow(tmp_path):
     ]
     assert future_fixed["amount_cents"] == 250.0
     assert future_daily["daily_bill_amount_cents"] == 244.0
+    assert future_daily["plan_name"] == "Future Saver"
     chart_by_day = {row["day"]: row["amount_cents"] for row in service.chart_points()}
     assert chart_by_day[tomorrow.isoformat()] == future_daily["daily_bill_amount_cents"]
 
@@ -538,6 +542,8 @@ def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, 
     assert bill["total_cents"] == 0.0
     assert bill["daily_site_totals"] == [{
         "day": today,
+        "plan_id": None,
+        "plan_name": None,
         "solar_kwh": 1.5,
         "load_kwh": 2.5,
         "grid_import_kwh": 3.5,

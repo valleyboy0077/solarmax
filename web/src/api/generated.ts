@@ -607,6 +607,10 @@ export interface components {
              * Format: date
              */
             day: string;
+            /** Plan Id */
+            plan_id?: number | null;
+            /** Plan Name */
+            plan_name?: string | null;
             /** Solar Kwh */
             solar_kwh: number;
             /** Load Kwh */
