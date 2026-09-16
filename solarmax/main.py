@@ -26,7 +26,7 @@ from .models import (
     MutationErrorResponse, MutationSuccessResponse, TouPeriodsResponse,
     WeatherRecommendationResponse,
 )
-from .service import SolarmaxService
+from .service import PlanDeletionError, SolarmaxService
 
 
 def _currency_to_cents(value: str) -> float:
@@ -123,6 +123,11 @@ JSON_MUTATION_ERROR_RESPONSES = {
 JSON_MUTATION_RESPONSES = {
     200: {"model": MutationSuccessResponse},
     **JSON_MUTATION_ERROR_RESPONSES,
+}
+PLAN_DELETE_RESPONSES = {
+    200: {"model": MutationSuccessResponse},
+    404: {"model": MutationErrorResponse},
+    409: {"model": MutationErrorResponse},
 }
 
 _stop_event = threading.Event()
@@ -402,6 +407,17 @@ def api_plans(
     if _wants_json(request):
         return _mutation_success("/plans", new_id)
     return RedirectResponse("/plans", status_code=303)
+
+
+@app.delete("/api/plans/{plan_id}", responses=PLAN_DELETE_RESPONSES)
+def api_plan_delete(plan_id: int):
+    try:
+        service.delete_power_plan(plan_id)
+    except KeyError as exc:
+        return _mutation_error(404, "not_found", str(exc))
+    except PlanDeletionError as exc:
+        return _mutation_error(409, exc.code, exc.message)
+    return _mutation_success("/plans", plan_id)
 
 
 @app.post("/api/tou/{plan_id}", responses=JSON_MUTATION_RESPONSES)

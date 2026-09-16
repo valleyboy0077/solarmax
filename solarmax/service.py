@@ -31,6 +31,15 @@ RETIRED_THEMES = {"solar-glass", "midnight-neon", "warm-desert"}
 logger = logging.getLogger(__name__)
 
 
+class PlanDeletionError(Exception):
+    """A plan cannot be safely removed without changing billing history."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class SolarmaxService:
     """Coordinates persistence, polling, billing, and AI helpers."""
 
@@ -210,6 +219,28 @@ class SolarmaxService:
                 ),
             )
             return int(cur.lastrowid)
+
+    def delete_power_plan(self, plan_id: int) -> None:
+        """Delete an unused plan without touching billing or telemetry history."""
+
+        with db_session(self.db_path) as conn:
+            if not fetch_one(conn, "SELECT id FROM power_plans WHERE id=?", (plan_id,)):
+                raise KeyError(f"No power plan with id {plan_id}")
+            if self._active_plan_id(conn) == plan_id:
+                raise PlanDeletionError("active_plan", "The active power plan cannot be deleted")
+            if int(fetch_one(conn, "SELECT COUNT(*) AS count FROM power_plans")["count"]) <= 1:
+                raise PlanDeletionError("last_plan", "The last remaining power plan cannot be deleted")
+            if fetch_one(
+                conn,
+                """SELECT 1 FROM telemetry_rollups tr
+                   JOIN billing_plan_revisions bpr ON bpr.id = tr.pricing_revision_id
+                   WHERE bpr.plan_id=? LIMIT 1""",
+                (plan_id,),
+            ):
+                raise PlanDeletionError("telemetry_references", "The power plan has telemetry references and cannot be deleted")
+            if fetch_one(conn, "SELECT 1 FROM billing_plan_revisions WHERE plan_id=? LIMIT 1", (plan_id,)):
+                raise PlanDeletionError("billing_plan_revisions", "The power plan has billing history and cannot be deleted")
+            conn.execute("DELETE FROM power_plans WHERE id=?", (plan_id,))
 
     def update_daily_supply_charge(self, plan_id: int, cents: float) -> None:
         """Update only the fixed daily charge for an existing plan."""

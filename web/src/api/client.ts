@@ -40,6 +40,16 @@ export async function apiForm(path: string, fields: Record<string, string | numb
   return payload as MutationResult;
 }
 
+export async function apiDelete(path: string, signal?: AbortSignal): Promise<MutationResult> {
+  const response = await fetch(path, { method: "DELETE", headers: { Accept: "application/json" }, signal });
+  const payload: unknown = isJson(response) ? await response.json() : undefined;
+  if (!response.ok || !(payload as { ok?: boolean })?.ok) {
+    const error = payload as { error?: { message?: string }; detail?: unknown };
+    throw new ApiError(error.error?.message ?? "The request could not be completed.", response.status, validationErrors(error.detail));
+  }
+  return payload as MutationResult;
+}
+
 export async function apiPost<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { method: "POST", headers: { Accept: "application/json" }, signal });
   const payload: unknown = isJson(response) ? await response.json() : undefined;

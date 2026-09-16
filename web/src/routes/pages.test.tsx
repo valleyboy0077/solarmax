@@ -1,13 +1,33 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import type { components } from "../api/generated";
-import { Chart, BillingRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { Chart, BillingRoute, PlansRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
-const apiMocks = vi.hoisted(() => ({ apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
+const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
 vi.mock("../api/client", () => apiMocks);
 
-afterEach(() => { cleanup(); apiMocks.apiGet.mockReset(); });
+afterEach(() => { cleanup(); apiMocks.apiDelete.mockReset(); apiMocks.apiGet.mockReset(); apiMocks.apiForm.mockReset(); apiMocks.apiPost.mockReset(); vi.restoreAllMocks(); });
+
+function plan(id: number, provider: string, name: string): components["schemas"]["PowerPlanResponse"] {
+  return { id, provider_name: provider, plan_name: name, billing_cycle: "monthly", billing_start_day: 1, billing_start_month: 1, daily_supply_charge_cents: 12, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "" };
+}
+
+function tou(planId: number, label: string): components["schemas"]["TouPeriodsResponse"] {
+  return { plan_id: planId, periods: [{ id: planId * 10, plan_id: planId, direction: "import", label, start_minute: 0, end_minute: 30, rate_cents_per_kwh: 20, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0 }] };
+}
+
+function mockPlans(plans: components["schemas"]["PowerPlanResponse"][], activePlanId: number | null) {
+  const state = {
+    settings: { theme: "classic-dark", mode: "manual", poll_interval_seconds: 30, site_name: "Solarmax", site_lat: -27.4698, site_lon: 153.0251, site_timezone: "Australia/Brisbane", active_plan_id: activePlanId },
+    inverters: [], power_plans: plans, live: null, totals: null, live_observed_at: null, all_reachable: true,
+    bill: { plan: plans[0] ?? null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
+    theme: "classic-dark",
+  } as components["schemas"]["DashboardStateResponse"];
+  const touByPath = new Map(plans.map((item) => [`/api/plans/${item.id}/tou`, tou(item.id, `${item.plan_name} import`)]));
+  apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state" ? Promise.resolve(state) : Promise.resolve(touByPath.get(path)));
+}
 
 describe("Billing page contract", () => {
   it("renders the active plan name in a labelled field", async () => {
@@ -26,6 +46,66 @@ describe("Billing page contract", () => {
 
     expect(await screen.findByText("Active plan")).toBeInTheDocument();
     expect(screen.getByText("Future Saver")).toBeInTheDocument();
+  });
+});
+
+describe("Plans & TOU tabs", () => {
+  it("renders named tabs and pairs the selected plan with its TOU editor", async () => {
+    const plans = [plan(1, "Provider One", "Solar Saver"), plan(2, "Provider Two", "Night Saver")];
+    mockPlans(plans, 2);
+    const user = userEvent.setup();
+    render(<PlansRoute />);
+
+    expect(await screen.findAllByRole("tab")).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: "Solar Saver" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: "Night Saver" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByLabelText("Edit TOU for")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Direction for Night Saver import")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show time picker for end time of Night Saver import" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Solar Saver" }));
+
+    expect(screen.getByRole("tab", { name: "Solar Saver" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("form", { name: "Solar Saver settings" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Direction for Solar Saver import")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Night Saver settings" })).not.toBeInTheDocument();
+    expect(apiMocks.apiGet).toHaveBeenCalledWith("/api/plans/1/tou");
+  });
+
+  it("saves edits for the selected plan", async () => {
+    const selectedPlan = plan(1, "Provider One", "Solar Saver");
+    mockPlans([selectedPlan], 1);
+    apiMocks.apiForm.mockResolvedValue({ ok: true, redirect_to: "/plans", resource_id: 1 });
+    const user = userEvent.setup();
+    render(<PlansRoute />);
+
+    await screen.findByRole("form", { name: "Solar Saver settings" });
+    await user.clear(screen.getByLabelText("Provider"));
+    await user.type(screen.getByLabelText("Provider"), "Updated Provider");
+    await user.click(screen.getByRole("button", { name: "Save plan" }));
+
+    await waitFor(() => expect(apiMocks.apiForm).toHaveBeenCalledWith("/api/plans", expect.objectContaining({ plan_id: 1, provider_name: "Updated Provider", plan_name: "Solar Saver" })));
+  });
+
+  it("requires confirmation before deleting a plan and reports delete errors", async () => {
+    const plans = [plan(1, "Provider One", "Solar Saver"), plan(2, "Provider Two", "Night Saver")];
+    mockPlans(plans, 1);
+    apiMocks.apiDelete.mockRejectedValue(new Error("The power plan has billing history and cannot be deleted"));
+    const confirmMock = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<PlansRoute />);
+
+    await screen.findByRole("tab", { name: "Night Saver" });
+    await user.click(screen.getByRole("tab", { name: "Night Saver" }));
+    await screen.findByRole("form", { name: "Night Saver settings" });
+    await user.click(screen.getByRole("button", { name: "Delete plan" }));
+    expect(confirmMock).toHaveBeenCalledWith("Delete Provider Two — Night Saver? This cannot be undone.");
+    expect(apiMocks.apiDelete).not.toHaveBeenCalled();
+
+    confirmMock.mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: "Delete plan" }));
+    await waitFor(() => expect(apiMocks.apiDelete).toHaveBeenCalledWith("/api/plans/2"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The power plan has billing history and cannot be deleted");
   });
 });
 
