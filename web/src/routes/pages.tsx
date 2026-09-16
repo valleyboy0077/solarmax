@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Check, CircleAlert, CloudSun, LoaderCircle, Plus, RefreshCw, Save, Sparkles, Trash2, Zap } from "lucide-react";
 import { apiForm, apiGet, apiPost } from "../api/client";
 import type { components } from "../api/generated";
 import { formatAuDate, formatEnergy, formatMoney, formatPower } from "../lib/formatters";
 import { Button } from "../components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui/states";
+import { getFittingChartPointCount } from "./chart-layout";
 
 type State = components["schemas"]["DashboardStateResponse"];
 type Bill = components["schemas"]["BillSummaryResponse"];
@@ -60,10 +61,27 @@ function BillTable({ bill }: { bill: Bill }) {
   return <div className="table-wrap" tabIndex={0} aria-label="Billing line items"><table><thead><tr><th>Day</th><th>Period</th><th>Direction</th><th>Energy</th><th>Rate</th><th>Amount</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.day}-${row.period_label}-${row.direction}-${index}`} className={row.unpriced ? "unpriced" : ""}><td>{formatAuDate(row.day)}</td><td>{row.period_label}</td><td><span className="direction">{row.direction}</span></td><td>{formatEnergy(row.kwh)}</td><td>{row.rate_cents_per_kwh === null ? "—" : `${row.rate_cents_per_kwh.toFixed(2)} c/kWh`}</td><td>{formatMoney(row.amount_cents)}{row.unpriced && <span className="unpriced-note">Unpriced reconciliation</span>}</td></tr>)}</tbody></table></div>;
 }
 
-function Chart({ points }: { points: components["schemas"]["ChartResponse"]["points"] }) {
+export function Chart({ points }: { points: components["schemas"]["ChartResponse"]["points"] }) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [fittingPointCount, setFittingPointCount] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const measure = () => {
+      if (chart.clientWidth > 0) setFittingPointCount(getFittingChartPointCount(chart.clientWidth, points.length));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(chart);
+    return () => observer.disconnect();
+  }, [points.length]);
+
   if (!points.length) return <EmptyState title="No chart data yet">Poll the inverters to begin building completed billing history.</EmptyState>;
-  const max = Math.max(...points.map((point) => Math.abs(point.amount_cents)), 1);
-  return <><div className="chart" role="img" aria-label="Daily net bill, with charges above and credits below the baseline">{points.map((point) => <div className="chart-column" key={point.day}><span className={point.amount_cents < 0 ? "chart-bar credit" : "chart-bar"} style={{ height: `${Math.max(8, Math.abs(point.amount_cents) / max * 120)}px` }} title={`${formatAuDate(point.day)} ${formatMoney(point.amount_cents)}`} /><small>{formatAuDate(point.day).slice(0, 5)}</small></div>)}</div><details className="chart-data"><summary>View chart data table</summary><div className="table-wrap"><table><thead><tr><th>Day</th><th>Net amount</th></tr></thead><tbody>{points.map((point) => <tr key={point.day}><td>{formatAuDate(point.day)}</td><td>{formatMoney(point.amount_cents)}</td></tr>)}</tbody></table></div></details></>;
+  const count = fittingPointCount === null ? points.length : Math.min(fittingPointCount, points.length);
+  const visiblePoints = points.slice(Math.max(0, points.length - count));
+  const max = Math.max(...visiblePoints.map((point) => Math.abs(point.amount_cents)), 1);
+  return <><div ref={chartRef} className="chart" role="img" aria-label={`Daily net bill chart. Showing the most recent ${visiblePoints.length} of ${points.length} days. Each bar represents one day's charge or credit; dates and dollar amounts are shown below. Open the data table for exact values.`}>{visiblePoints.map((point) => { const date = formatAuDate(point.day); const exactAmount = formatMoney(point.amount_cents); return <div className="chart-column" key={point.day}><div className="chart-bar-area"><span aria-hidden="true" className={point.amount_cents < 0 ? "chart-bar credit" : "chart-bar"} style={{ height: `${Math.max(8, Math.abs(point.amount_cents) / max * 120)}px` }} title={`${date} ${exactAmount}`} /></div><small className="chart-date">{date.slice(0, 5)}</small><span className="chart-amount" title={exactAmount}>{exactAmount}</span></div>; })}</div><details className="chart-data"><summary>View chart data table</summary><div className="table-wrap"><table><thead><tr><th>Day</th><th>Net amount</th></tr></thead><tbody>{points.map((point) => <tr key={point.day}><td>{formatAuDate(point.day)}</td><td>{formatMoney(point.amount_cents)}</td></tr>)}</tbody></table></div></details></>;
 }
 
 export function DashboardRoute() {

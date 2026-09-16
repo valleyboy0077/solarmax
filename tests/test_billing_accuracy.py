@@ -220,6 +220,11 @@ def test_billing_reconciles_today_grid_kwh_to_the_plant_meter(tmp_path):
     assert reconciliation["rate_cents_per_kwh"] == 8.0
     # Export is a credit, so the amount is negative.
     assert round(reconciliation["amount_cents"], 3) == -round(0.25 * 8.0, 3)
+    # The overview chart must use the same finalized daily amount as Billing,
+    # including reconciliation and export tiering.
+    chart_row = next(row for row in service.chart_points() if row["day"] == today)
+    daily_total = next(row for row in bill["daily_site_totals"] if row["day"] == today)
+    assert chart_row["amount_cents"] == daily_total["daily_bill_amount_cents"]
 
 
 def test_billing_reconciles_past_day_grid_kwh_to_daily_meter(tmp_path):

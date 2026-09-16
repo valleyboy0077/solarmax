@@ -778,24 +778,20 @@ class SolarmaxService:
         }
 
     def chart_points(self, days: int = 14) -> list[dict[str, Any]]:
-        """Generate daily net billing bars for the dashboard chart."""
+        """Generate chart points from the finalized billing daily totals.
 
-        with db_session(self.db_path) as conn:
-            site_timezone = self._valid_timezone(get_settings(conn).get("site_timezone", "Australia/Brisbane"))
-            rows = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
-            settings = get_settings(conn)
-            plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
-            supply_charge_cents = 0.0
-            if plan_id:
-                plan = fetch_one(conn, "SELECT daily_supply_charge_cents FROM power_plans WHERE id = ?", (plan_id,))
-                supply_charge_cents = float((plan or {}).get("daily_supply_charge_cents", 0.0) or 0.0)
-            grouped: dict[str, float] = {}
-            for row in rows:
-                day = datetime.fromisoformat(row["bucket_start"]).astimezone(ZoneInfo(site_timezone)).date().isoformat()
-                grouped[day] = grouped.get(day, 0.0) + float(row["amount_cents"])
-            for day in grouped:
-                grouped[day] += supply_charge_cents
-        items = sorted(grouped.items())[-days:]
+        The overview and Billing page must show the same daily amount. Reusing
+        ``current_bill_summary`` is important because it includes meter
+        reconciliation, export tiering, and supply charges; summing raw
+        rollup amounts here would omit those adjustments.
+        """
+
+        daily_totals = self.current_bill_summary().get("daily_site_totals", [])
+        items = [
+            (str(row["day"]), float(row["daily_bill_amount_cents"]))
+            for row in daily_totals
+            if row.get("daily_bill_amount_cents") is not None
+        ][-days:]
         return [{"day": day, "amount_cents": round(amount, 2)} for day, amount in items]
 
     def weather_and_recommendation(self, inverter_id: int | None = None) -> dict[str, Any]:
