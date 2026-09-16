@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Check, CircleAlert, CloudSun, LoaderCircle, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, Zap } from "lucide-react";
+import { Check, CircleAlert, Clock, CloudSun, LoaderCircle, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, Zap } from "lucide-react";
 import { apiDelete, apiForm, apiGet, apiPost } from "../api/client";
 import type { components } from "../api/generated";
 import { formatAuDate, formatEnergy, formatMoney, formatPower } from "../lib/formatters";
@@ -127,9 +127,18 @@ export function TouTableColumnGroup() {
   return <colgroup><col className="tou-direction-column" /><col className="tou-label-column" /><col className="tou-time-column" /><col className="tou-time-column" /><col className="tou-rate-column" /><col className="tou-tier-allowance-column" /><col className="tou-rate-column" /><col className="tou-rate-column" /><col className="tou-actions-column" /></colgroup>;
 }
 
-function EndTimeField({ period, update }: { period: Tou; update: (value: number) => void }) {
+export function EndTimeField({ period, update }: { period: Tou; update: (value: number) => void }) {
   const pickerId = `end-time-picker-${period.id}`;
-  return <span className="tou-end-time-control"><input aria-label={`End time for ${period.label}`} type="text" inputMode="numeric" pattern="(?:[01]\\d|2[0-4]):[0-5]\\d" placeholder="HH:MM" value={time(period.end_minute)} onChange={(e) => update(minutes(e.target.value))} /><input id={pickerId} className="tou-picker-input" aria-hidden="true" tabIndex={-1} type="time" step="1800" value={time(Math.min(period.end_minute, 1410))} onChange={(e) => update(minutes(e.target.value))} /><Button type="button" aria-label={`Show time picker for end time of ${period.label}`} onClick={() => { const picker = document.getElementById(pickerId) as HTMLInputElement | null; picker?.showPicker?.(); picker?.click(); }}>Pick</Button></span>;
+  const pickerRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(() => time(period.end_minute));
+  useEffect(() => { setDraft(time(period.end_minute)); }, [period.end_minute]);
+  const openPicker = () => {
+    const picker = pickerRef.current;
+    if (!picker) return;
+    if (picker.showPicker) picker.showPicker();
+    else picker.click();
+  };
+  return <span className="tou-end-time-control"><input aria-label={`End time for ${period.label}`} type="text" inputMode="numeric" pattern="(?:[01]\d|2[0-4]):[0-5]\d" placeholder="HH:MM" value={draft} onChange={(e) => { const value = e.target.value; setDraft(value); if (/^(?:[01]\d|2[0-4]):[0-5]\d$/.test(value)) update(minutes(value)); }} /><input ref={pickerRef} id={pickerId} className="tou-picker-input" aria-hidden="true" tabIndex={-1} type="time" step="1800" value={time(Math.min(period.end_minute, 1410))} onChange={(e) => update(minutes(e.target.value))} /><Button className="tou-time-picker-button" type="button" aria-label="Show time picker" title="Show time picker" onClick={openPicker}><Clock aria-hidden="true" size={16} /></Button></span>;
 }
 
 function TouEditor({ plan, onSaved }: { plan: Plan; onSaved: () => Promise<void> }) {

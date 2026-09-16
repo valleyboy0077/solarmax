@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import type { components } from "../api/generated";
-import { Chart, BillingRoute, PlansRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { Chart, BillingRoute, EndTimeField, PlansRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
 const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
@@ -61,7 +61,7 @@ describe("Plans & TOU tabs", () => {
     expect(screen.getByRole("tab", { name: "Night Saver" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByLabelText("Edit TOU for")).not.toBeInTheDocument();
     expect(await screen.findByLabelText("Direction for Night Saver import")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show time picker for end time of Night Saver import" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show time picker" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Solar Saver" }));
 
@@ -203,6 +203,48 @@ describe("TOU export tier inputs", () => {
     rerender(<table><tbody><tr><TouTierInputs period={{ ...exportPeriod, direction: "import" }} update={update} /></tr></tbody></table>);
     expect(screen.queryByLabelText("Tier allowance for Daytime solar")).not.toBeInTheDocument();
     expect(screen.getByLabelText("No export tiers for Daytime solar")).toBeInTheDocument();
+  });
+});
+
+describe("TOU end time control", () => {
+  const period = {
+    id: 1, plan_id: 1, direction: "import" as const, label: "Overnight",
+    start_minute: 1320, end_minute: 1440, rate_cents_per_kwh: 20,
+    export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0,
+  };
+
+  it("uses an exact clock affordance and opens the native picker", async () => {
+    const showPicker = vi.fn();
+    const originalShowPicker = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "showPicker");
+    Object.defineProperty(HTMLInputElement.prototype, "showPicker", { configurable: true, value: showPicker });
+    try {
+      const user = userEvent.setup();
+      render(<EndTimeField period={period} update={vi.fn()} />);
+      const pickerButton = screen.getByRole("button", { name: "Show time picker" });
+      expect(pickerButton).toHaveAttribute("title", "Show time picker");
+      expect(screen.queryByText("Pick")).not.toBeInTheDocument();
+      expect(document.querySelectorAll(".tou-end-time-control > input:not(.tou-picker-input)")).toHaveLength(1);
+      expect(document.querySelector(".tou-picker-input")).toHaveAttribute("aria-hidden", "true");
+
+      await user.click(pickerButton);
+      expect(showPicker).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalShowPicker) Object.defineProperty(HTMLInputElement.prototype, "showPicker", originalShowPicker);
+      else Reflect.deleteProperty(HTMLInputElement.prototype, "showPicker");
+    }
+  });
+
+  it("displays and accepts the end-of-day value 24:00", async () => {
+    const update = vi.fn();
+    const user = userEvent.setup();
+    render(<EndTimeField period={{ ...period, end_minute: 0 }} update={update} />);
+    const endInput = screen.getByRole("textbox", { name: "End time for Overnight" });
+
+    await user.clear(endInput);
+    await user.type(endInput, "24:00");
+
+    expect(endInput).toHaveValue("24:00");
+    expect(update).toHaveBeenLastCalledWith(1440);
   });
 });
 
