@@ -62,6 +62,28 @@ CREATE TABLE IF NOT EXISTS tou_periods (
     FOREIGN KEY(plan_id) REFERENCES power_plans(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS billing_plan_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL,
+    effective_from TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    plan_name TEXT NOT NULL,
+    billing_cycle TEXT NOT NULL,
+    billing_start_day INTEGER NOT NULL,
+    billing_start_month INTEGER NOT NULL,
+    daily_supply_charge_cents REAL NOT NULL DEFAULT 0.0,
+    export_tier_kwh REAL NOT NULL DEFAULT 0.0,
+    export_tier_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
+    export_excess_rate_cents_per_kwh REAL NOT NULL DEFAULT 0.0,
+    notes TEXT NOT NULL DEFAULT '',
+    tou_periods_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(plan_id) REFERENCES power_plans(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_plan_revisions_effective
+    ON billing_plan_revisions(effective_from, id);
+
 CREATE TABLE IF NOT EXISTS telemetry_raw (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     inverter_id INTEGER NOT NULL,
@@ -140,6 +162,7 @@ ORIGIN_IMPORT_PERIODS = (
 )
 ORIGIN_IMPORT_TOU_MIGRATION_KEY = "origin_import_tou_v1_applied"
 EXPORT_TIER_TOU_MIGRATION_KEY = "export_tiers_to_tou_v1_applied"
+BILLING_REVISION_BASELINE = "0001-01-01"
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -180,6 +203,7 @@ def init_db(path: Path) -> None:
         migrate(conn)
         seed_default_settings(conn)
         seed_default_data(conn)
+        _ensure_initial_billing_revision(conn)
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -218,8 +242,97 @@ def migrate(conn: sqlite3.Connection) -> None:
     for column in ("export_tier_kwh", "export_tier_rate_cents_per_kwh", "export_excess_rate_cents_per_kwh"):
         if column not in tou_columns:
             conn.execute(f"ALTER TABLE tou_periods ADD COLUMN {column} REAL NOT NULL DEFAULT 0.0")
+    rollup_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_rollups)")}
+    if "pricing_revision_id" not in rollup_columns:
+        conn.execute(
+            "ALTER TABLE telemetry_rollups ADD COLUMN pricing_revision_id INTEGER REFERENCES billing_plan_revisions(id)"
+        )
     _migrate_export_tiers_to_tou_periods(conn)
     _migrate_origin_import_tou(conn)
+
+
+def create_billing_plan_revision(
+    conn: sqlite3.Connection, plan_id: int, effective_from: str
+) -> int | None:
+    """Append a pricing snapshot unless the effective-date snapshot is unchanged.
+
+    The editable ``power_plans`` and ``tou_periods`` tables remain the
+    compatibility surface for the existing UI. Billing reads these immutable
+    snapshots instead, so editing the current configuration cannot rewrite
+    already priced telemetry.
+    """
+
+    plan = fetch_one(conn, "SELECT * FROM power_plans WHERE id=?", (plan_id,))
+    if plan is None:
+        return None
+    periods = fetch_all(
+        conn,
+        "SELECT * FROM tou_periods WHERE plan_id=? ORDER BY direction, start_minute, id",
+        (plan_id,),
+    )
+    periods_json = json.dumps(periods, sort_keys=True, separators=(",", ":"))
+    existing = conn.execute(
+        """SELECT * FROM billing_plan_revisions
+           WHERE effective_from=? ORDER BY id DESC LIMIT 1""",
+        (effective_from,),
+    ).fetchone()
+    values = (
+        int(plan["id"]),
+        str(plan["provider_name"]),
+        str(plan["plan_name"]),
+        str(plan["billing_cycle"]),
+        int(plan["billing_start_day"]),
+        int(plan["billing_start_month"]),
+        float(plan["daily_supply_charge_cents"] or 0.0),
+        float(plan["export_tier_kwh"] or 0.0),
+        float(plan["export_tier_rate_cents_per_kwh"] or 0.0),
+        float(plan["export_excess_rate_cents_per_kwh"] or 0.0),
+        str(plan["notes"]),
+        periods_json,
+    )
+    if existing and tuple(existing[column] for column in (
+        "plan_id", "provider_name", "plan_name", "billing_cycle",
+        "billing_start_day", "billing_start_month", "daily_supply_charge_cents",
+        "export_tier_kwh", "export_tier_rate_cents_per_kwh",
+        "export_excess_rate_cents_per_kwh", "notes", "tou_periods_json",
+    )) == values:
+        return int(existing["id"])
+    cursor = conn.execute(
+        """INSERT INTO billing_plan_revisions
+           (plan_id, effective_from, provider_name, plan_name, billing_cycle,
+            billing_start_day, billing_start_month, daily_supply_charge_cents,
+            export_tier_kwh, export_tier_rate_cents_per_kwh,
+            export_excess_rate_cents_per_kwh, notes, tou_periods_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (values[0], effective_from, *values[1:], iso_now()),
+    )
+    return int(cursor.lastrowid)
+
+
+def _ensure_initial_billing_revision(conn: sqlite3.Connection) -> None:
+    """Backfill one baseline snapshot and link legacy rollups once."""
+
+    active_plan = conn.execute(
+        "SELECT value FROM app_settings WHERE key='active_plan_id'"
+    ).fetchone()
+    baseline_id = conn.execute(
+        "SELECT id FROM billing_plan_revisions WHERE effective_from=? ORDER BY id LIMIT 1",
+        (BILLING_REVISION_BASELINE,),
+    ).fetchone()
+    if baseline_id is None and active_plan is not None:
+        try:
+            baseline = create_billing_plan_revision(
+                conn, int(active_plan[0]), BILLING_REVISION_BASELINE
+            )
+        except (TypeError, ValueError):
+            baseline = None
+        if baseline is not None:
+            baseline_id = {"id": baseline}
+    if baseline_id is not None:
+        conn.execute(
+            "UPDATE telemetry_rollups SET pricing_revision_id=? WHERE pricing_revision_id IS NULL",
+            (baseline_id["id"],),
+        )
 
 
 def _migrate_export_tiers_to_tou_periods(conn: sqlite3.Connection) -> None:

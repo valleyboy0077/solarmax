@@ -3,7 +3,7 @@
   "/settings": {"contains": ["Settings", "Application settings"], "forms": [{"action": "/api/settings", "fields": ["theme", "mode", "site_name", "site_lat", "site_lon", "site_timezone", "poll_interval_seconds", "active_plan_id"]}]},
   "/inverters": {"contains": ["Inverter profile", "Edit / add inverter"], "forms": [{"action": "/api/inverters", "fields": ["inverter_id", "name", "model", "adapter_kind", "ip_address", "subnet", "enabled", "battery_feed_in_limit_kw", "battery_reserve_percent", "export_limit_kw", "allow_grid_charge", "notes"]}, {"action": "/api/ai/apply", "fields": ["inverter_id"]}]},
   "/plans": {"contains": ["Power plans", "Import/export rates"], "forms": [{"action": "/api/plans", "fields": ["plan_id", "provider_name", "plan_name", "billing_cycle", "billing_start_day", "billing_start_month", "notes"]}, {"action": "/api/tou/1", "fields": ["daily_supply_charge", "payload"]}]},
-  "/billing": {"contains": ["Current bill", "Bill breakdown by day and TOU period"], "forms": []}
+  "/billing": {"contains": ["Current bill", "Active plan:", "Bill breakdown by day and TOU period"], "forms": []}
   ,"api": [
     {"method": "GET", "path": "/api/state", "status": 200, "json_keys": ["settings", "inverters", "power_plans", "live", "totals", "all_reachable", "bill", "theme", "live_observed_at"]},
     {"method": "GET", "path": "/api/chart?days=1", "status": 200, "json_keys": ["points"]},

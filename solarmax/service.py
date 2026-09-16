@@ -11,7 +11,15 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .billing import aggregate_bill_lines, apply_daily_export_tier, bucket_start, find_period, rollup_by_day_and_period
-from .db import db_session, fetch_all, fetch_one, get_settings, init_db, set_setting
+from .db import (
+    create_billing_plan_revision,
+    db_session,
+    fetch_all,
+    fetch_one,
+    get_settings,
+    init_db,
+    set_setting,
+)
 from .inverters.base import InverterReading
 from .inverters.registry import get_adapter
 from .models import AppSettings, InverterProfile, PowerPlan, TouPeriod
@@ -80,6 +88,12 @@ class SolarmaxService:
                 if key in settings:
                     set_setting(conn, key, str(settings[key]))
             set_setting(conn, "active_plan_id", "" if settings.get("active_plan_id") is None else str(settings["active_plan_id"]))
+            if settings.get("active_plan_id") is not None:
+                self._schedule_billing_revision(
+                    conn,
+                    int(settings["active_plan_id"]),
+                    site_timezone=settings["site_timezone"],
+                )
 
     def list_inverters(self) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
@@ -173,6 +187,8 @@ class SolarmaxService:
                 )
                 if not updated.rowcount:
                     raise KeyError(f"No power plan with id {plan.id}")
+                if self._active_plan_id(conn) == plan.id:
+                    self._schedule_billing_revision(conn, plan.id)
                 return plan.id
             cur = conn.execute(
                 """
@@ -200,6 +216,8 @@ class SolarmaxService:
         validated = PowerPlan(provider_name="Existing", plan_name="Existing", daily_supply_charge_cents=cents)
         with db_session(self.db_path) as conn:
             conn.execute("UPDATE power_plans SET daily_supply_charge_cents=? WHERE id=?", (validated.daily_supply_charge_cents, plan_id))
+            if self._active_plan_id(conn) == plan_id:
+                self._schedule_billing_revision(conn, plan_id)
 
     def list_tou_periods(self, plan_id: int) -> list[dict[str, Any]]:
         with db_session(self.db_path) as conn:
@@ -228,6 +246,8 @@ class SolarmaxService:
                     for period in validated
                 ],
             )
+            if self._active_plan_id(conn) == plan_id:
+                self._schedule_billing_revision(conn, plan_id)
 
     def save_tou_schedule(
         self,
@@ -275,6 +295,8 @@ class SolarmaxService:
                 "UPDATE power_plans SET daily_supply_charge_cents=? WHERE id=?",
                 (tariff.daily_supply_charge_cents, plan_id),
             )
+            if self._active_plan_id(conn) == plan_id:
+                self._schedule_billing_revision(conn, plan_id)
 
     # ---------------------------------------------------------------------
     # Polling and telemetry
@@ -386,6 +408,8 @@ class SolarmaxService:
         """Aggregate any half-hour bucket that has now closed."""
 
         with db_session(self.db_path) as conn:
+            settings = get_settings(conn)
+            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
             rows = fetch_all(conn, "SELECT * FROM telemetry_raw ORDER BY captured_at")
             by_bucket: dict[tuple[int, str], list[dict[str, Any]]] = {}
             observed_buckets: set[tuple[int, str]] = set()
@@ -416,11 +440,14 @@ class SolarmaxService:
                 for row in bucket_rows:
                     for key in sums:
                         sums[key] += float(row[key])
+                pricing_revision = self._revision_for_day(
+                    conn, self._local_day(start_iso, ZoneInfo(site_timezone))
+                )
                 conn.execute(
                     """
                     INSERT INTO telemetry_rollups
-                    (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, amount_cents)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, amount_cents, pricing_revision_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(inverter_id, bucket_start) DO UPDATE SET
                         bucket_end=excluded.bucket_end,
                         solar_kwh=excluded.solar_kwh,
@@ -429,7 +456,8 @@ class SolarmaxService:
                         grid_export_kwh=excluded.grid_export_kwh,
                         battery_charge_kwh=excluded.battery_charge_kwh,
                         battery_discharge_kwh=excluded.battery_discharge_kwh,
-                        amount_cents=excluded.amount_cents
+                        amount_cents=excluded.amount_cents,
+                        pricing_revision_id=COALESCE(telemetry_rollups.pricing_revision_id, excluded.pricing_revision_id)
                     """,
                     (
                         inverter_id,
@@ -442,23 +470,30 @@ class SolarmaxService:
                         sums["delta_battery_charge_kwh"],
                         sums["delta_battery_discharge_kwh"],
                         0.0,
+                        pricing_revision["id"] if pricing_revision else None,
                     ),
                 )
         self.recalculate_rollup_amounts()
 
     def recalculate_rollup_amounts(self) -> None:
-        """Re-price rollups using the active plan and its TOU brackets."""
+        """Re-price rollups from their immutable pricing snapshots."""
 
         with db_session(self.db_path) as conn:
             settings = get_settings(conn)
             plan_id = int(settings["active_plan_id"]) if settings.get("active_plan_id") else None
-            if not plan_id:
-                return
-            periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
             site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
+            fallback_periods = (
+                fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+                if plan_id else []
+            )
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
             for row in rollups:
                 captured = datetime.fromisoformat(row["bucket_start"])
+                revision_id, periods = self._pricing_for_rollup(
+                    conn, row, site_timezone, fallback_periods
+                )
+                if not periods:
+                    continue
                 import_period = self._match_period(periods, captured, "import", site_timezone)
                 export_period = self._match_period(periods, captured, "export", site_timezone)
                 amount = 0.0
@@ -466,7 +501,10 @@ class SolarmaxService:
                     amount += float(row["grid_import_kwh"]) * float(import_period["rate_cents_per_kwh"])
                 if export_period:
                     amount -= float(row["grid_export_kwh"]) * float(export_period["rate_cents_per_kwh"])
-                conn.execute("UPDATE telemetry_rollups SET amount_cents = ? WHERE id = ?", (amount, row["id"]))
+                conn.execute(
+                    "UPDATE telemetry_rollups SET amount_cents=?, pricing_revision_id=? WHERE id=?",
+                    (amount, revision_id, row["id"]),
+                )
 
     def close_day(self) -> dict[str, Any]:
         """Close the current local day and return its finalized meter totals."""
@@ -563,41 +601,54 @@ class SolarmaxService:
             if plan is None:
                 daily_site_totals = self._daily_site_totals(conn, [])
                 return self._empty_bill_summary(daily_site_totals, site_timezone)
-            periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+            fallback_periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
             rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
-            detailed = aggregate_bill_lines(
-                [
-                    {
-                        "captured_at": datetime.fromisoformat(row["bucket_start"]),
-                        "grid_import_kwh": row["grid_import_kwh"],
-                        "grid_export_kwh": row["grid_export_kwh"],
-                    }
-                    for row in rollups
-                ],
-                periods,
-                site_timezone,
+            detailed = self._rollup_bill_lines(
+                conn, rollups, site_timezone, fallback_periods
             )
-            detailed.extend(self._current_live_lines(conn, periods, site_timezone))
+            _, today_periods, today_supply_charge = self._pricing_for_today(
+                conn,
+                site_timezone,
+                fallback_periods,
+                float(plan.get("daily_supply_charge_cents", 0.0) or 0.0),
+            )
+            today_revision = self._revision_for_day(
+                conn, datetime.now(ZoneInfo(site_timezone)).date()
+            )
+            detailed.extend(self._current_live_lines(
+                conn,
+                today_periods,
+                site_timezone,
+                int(today_revision["id"]) if today_revision else None,
+            ))
             # The plant daily counter total is the meter authority.  Interval
             # rows retain their TOU allocation where observed; if polling did
             # not have a pre-midnight lifetime baseline, report the remaining
             # meter energy without fabricating a time/rate for it.
             grouped, today_metered = self._with_meter_reconciliation(
-                conn, detailed, site_timezone, periods,
+                conn, detailed, site_timezone, fallback_periods,
             )
             grouped = apply_daily_export_tier(grouped)
-            supply_charge_cents = float(plan.get("daily_supply_charge_cents", 0.0) or 0.0)
+            daily = list(grouped)
             supply_days = sorted({row["day"] for row in grouped})
-            grouped.extend({
-                "day": day,
-                "period_label": "Daily supply charge",
-                "direction": "fixed",
-                "kwh": 0.0,
-                "rate_cents_per_kwh": 0.0,
-                "amount_cents": round(supply_charge_cents, 3),
-            } for day in supply_days)
+            for day in supply_days:
+                revision_id, supply_charge = self._supply_charge_for_day(
+                    conn,
+                    day,
+                    grouped,
+                    site_timezone,
+                    float(plan.get("daily_supply_charge_cents", 0.0) or 0.0),
+                )
+                grouped.append({
+                    "day": day,
+                    "period_label": "Daily supply charge",
+                    "direction": "fixed",
+                    "kwh": 0.0,
+                    "rate_cents_per_kwh": 0.0,
+                    "amount_cents": round(supply_charge, 3),
+                    "pricing_revision_id": revision_id,
+                })
             total = sum(float(row["amount_cents"]) for row in grouped if row["amount_cents"] is not None)
-            daily = self.daily_bill_breakdown(conn, plan_id, site_timezone)
             daily_site_totals = self._daily_site_totals(conn, grouped)
             return {
                 "plan": plan,
@@ -607,7 +658,7 @@ class SolarmaxService:
                 "daily_site_totals": daily_site_totals,
                 "today_grid_import_kwh": round(today_metered["grid_import_kwh"], 4),
                 "today_grid_export_kwh": round(today_metered["grid_export_kwh"], 4),
-                "supply_charge_cents": supply_charge_cents,
+                "supply_charge_cents": today_supply_charge,
                 "supply_charge_days": len(supply_days),
                 # Phase 0 deliberately preserves the legacy all-retained-
                 # telemetry bill. Billing-cycle configuration is not yet a
@@ -623,19 +674,17 @@ class SolarmaxService:
         periods = fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
         site_timezone = site_timezone or self.load_app_settings().site_timezone
         rollups = fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start")
-        detailed = aggregate_bill_lines(
-            [
-                {
-                    "captured_at": datetime.fromisoformat(row["bucket_start"]),
-                    "grid_import_kwh": row["grid_import_kwh"],
-                    "grid_export_kwh": row["grid_export_kwh"],
-                }
-                for row in rollups
-            ],
-            periods,
-            site_timezone,
+        detailed = self._rollup_bill_lines(conn, rollups, site_timezone, periods)
+        today_revision = self._revision_for_day(
+            conn, datetime.now(ZoneInfo(site_timezone)).date()
         )
-        detailed.extend(self._current_live_lines(conn, periods, site_timezone))
+        _, today_periods, _ = self._pricing_for_today(conn, site_timezone, periods)
+        detailed.extend(self._current_live_lines(
+            conn,
+            today_periods,
+            site_timezone,
+            int(today_revision["id"]) if today_revision else None,
+        ))
         grouped, _ = self._with_meter_reconciliation(conn, detailed, site_timezone, periods)
         return apply_daily_export_tier(grouped)
 
@@ -853,6 +902,153 @@ class SolarmaxService:
             "supply_charge_cents": 0.0, "supply_charge_days": 0,
             "billing_window_applied": False, "lines": [], "rollups": [],
         }
+
+    @staticmethod
+    def _active_plan_id(conn: sqlite3.Connection) -> int | None:
+        """Return the configured active plan ID, if it is validly encoded."""
+
+        value = get_settings(conn).get("active_plan_id")
+        if not value:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _schedule_billing_revision(
+        self,
+        conn: sqlite3.Connection,
+        plan_id: int,
+        *,
+        site_timezone: str | None = None,
+    ) -> int | None:
+        """Schedule the edited active pricing snapshot for the next local day."""
+
+        if site_timezone is None:
+            settings = get_settings(conn)
+            site_timezone = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
+        effective_from = (
+            datetime.now(ZoneInfo(site_timezone)).date() + timedelta(days=1)
+        ).isoformat()
+        return create_billing_plan_revision(conn, plan_id, effective_from)
+
+    @staticmethod
+    def _revision_periods(revision: dict[str, Any] | sqlite3.Row | None) -> list[dict[str, Any]]:
+        """Decode a persisted revision's TOU snapshot without exposing JSON to callers."""
+
+        if revision is None:
+            return []
+        try:
+            periods = json.loads(revision["tou_periods_json"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return []
+        return periods if isinstance(periods, list) else []
+
+    def _revision_by_id(self, conn: sqlite3.Connection, revision_id: int | None) -> dict[str, Any] | None:
+        if revision_id is None:
+            return None
+        return fetch_one(conn, "SELECT * FROM billing_plan_revisions WHERE id=?", (revision_id,))
+
+    def _revision_for_day(self, conn: sqlite3.Connection, day: date) -> dict[str, Any] | None:
+        """Resolve the immutable snapshot for the configured active plan/day."""
+
+        plan_id = self._active_plan_id(conn)
+        if plan_id is None:
+            return None
+        return fetch_one(
+            conn,
+            """SELECT * FROM billing_plan_revisions
+               WHERE plan_id=? AND effective_from <= ?
+               ORDER BY effective_from DESC, id DESC LIMIT 1""",
+            (plan_id, day.isoformat()),
+        )
+
+    def _pricing_for_rollup(
+        self,
+        conn: sqlite3.Connection,
+        row: dict[str, Any],
+        site_timezone: str,
+        fallback_periods: list[dict[str, Any]],
+    ) -> tuple[int | None, list[dict[str, Any]]]:
+        """Get the rollup's immutable pricing, with a legacy read fallback."""
+
+        revision = self._revision_by_id(conn, row.get("pricing_revision_id"))
+        if revision is None:
+            revision = self._revision_for_day(
+                conn, self._local_day(row["bucket_start"], ZoneInfo(site_timezone))
+            )
+        periods = self._revision_periods(revision) or fallback_periods
+        return (int(revision["id"]) if revision is not None else None), periods
+
+    def _pricing_for_today(
+        self,
+        conn: sqlite3.Connection,
+        site_timezone: str,
+        fallback_periods: list[dict[str, Any]],
+        fallback_supply_charge: float = 0.0,
+    ) -> tuple[int | None, list[dict[str, Any]], float]:
+        revision = self._revision_for_day(conn, datetime.now(ZoneInfo(site_timezone)).date())
+        periods = self._revision_periods(revision) or fallback_periods
+        charge = float(
+            (revision["daily_supply_charge_cents"] if revision is not None else fallback_supply_charge) or 0.0
+        )
+        return (int(revision["id"]) if revision is not None else None, periods, charge)
+
+    def _rollup_bill_lines(
+        self,
+        conn: sqlite3.Connection,
+        rollups: list[dict[str, Any]],
+        site_timezone: str,
+        fallback_periods: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Price each completed rollup using its stored revision identity."""
+
+        detailed: list[dict[str, Any]] = []
+        for row in rollups:
+            revision_id, periods = self._pricing_for_rollup(
+                conn, row, site_timezone, fallback_periods
+            )
+            if not periods:
+                continue
+            lines = aggregate_bill_lines(
+                [{
+                    "captured_at": datetime.fromisoformat(row["bucket_start"]),
+                    "grid_import_kwh": row["grid_import_kwh"],
+                    "grid_export_kwh": row["grid_export_kwh"],
+                    "pricing_revision_id": revision_id,
+                }],
+                periods,
+                site_timezone,
+            )
+            detailed.extend(lines)
+        return detailed
+
+    def _supply_charge_for_day(
+        self,
+        conn: sqlite3.Connection,
+        day: str,
+        bill_rows: list[dict[str, Any]],
+        site_timezone: str,
+        fallback_supply_charge: float,
+    ) -> tuple[int | None, float]:
+        """Resolve the fixed charge from the same revision as that day's energy."""
+
+        revision_id = next(
+            (
+                int(row["pricing_revision_id"])
+                for row in bill_rows
+                if row.get("day") == day and row.get("pricing_revision_id") is not None
+            ),
+            None,
+        )
+        revision = self._revision_by_id(conn, revision_id)
+        if revision is None:
+            revision = self._revision_for_day(
+                conn, date.fromisoformat(day)
+            )
+        if revision is None:
+            return None, fallback_supply_charge
+        return int(revision["id"]), float(revision["daily_supply_charge_cents"] or 0.0)
 
     # ---------------------------------------------------------------------
     # Internal helpers
@@ -1184,7 +1380,21 @@ class SolarmaxService:
                     ]
                     difference = metered[column]
                 if difference > 0.000001:
-                    flat_period = self._flat_day_period(periods, direction)
+                    revision_id = next(
+                        (
+                            int(row["pricing_revision_id"])
+                            for row in grouped
+                            if row["day"] == day and row.get("pricing_revision_id") is not None
+                        ),
+                        None,
+                    )
+                    revision = self._revision_by_id(conn, revision_id)
+                    if revision is None:
+                        revision = self._revision_for_day(conn, date.fromisoformat(day))
+                    day_periods = self._revision_periods(revision) or periods
+                    if revision is not None:
+                        revision_id = int(revision["id"])
+                    flat_period = self._flat_day_period(day_periods, direction)
                     if flat_period is not None:
                         flat_rate = float(flat_period["rate_cents_per_kwh"])
                         # A single flat full-day tariff makes the adjustment's
@@ -1201,6 +1411,7 @@ class SolarmaxService:
                             "rate_cents_per_kwh": flat_rate,
                             "amount_cents": round(amount, 3),
                             "tou_period_id": flat_period.get("id"),
+                            "pricing_revision_id": revision_id,
                             "export_tier_kwh": float(flat_period.get("export_tier_kwh", 0.0) or 0.0),
                             "export_tier_rate_cents_per_kwh": float(flat_period.get("export_tier_rate_cents_per_kwh", 0.0) or 0.0),
                             "export_excess_rate_cents_per_kwh": float(flat_period.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
@@ -1214,13 +1425,20 @@ class SolarmaxService:
                             "rate_cents_per_kwh": None,
                             "amount_cents": None,
                             "unpriced": True,
+                            "pricing_revision_id": revision_id,
                         })
         return grouped, metered_by_day.get(today.isoformat(), {
             "grid_import_kwh": 0.0,
             "grid_export_kwh": 0.0,
         })
 
-    def _current_live_lines(self, conn: sqlite3.Connection, periods: list[dict[str, Any]], site_timezone: str) -> list[dict[str, Any]]:
+    def _current_live_lines(
+        self,
+        conn: sqlite3.Connection,
+        periods: list[dict[str, Any]],
+        site_timezone: str,
+        pricing_revision_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Price the open half-hour from lifetime counter deltas, when available."""
 
         start = bucket_start(datetime.now(timezone.utc))
@@ -1236,6 +1454,7 @@ class SolarmaxService:
                 "captured_at": start,
                 "grid_import_kwh": max(0.0, float(current["grid_import_total_kwh"]) - float(baseline["grid_import_total_kwh"])),
                 "grid_export_kwh": max(0.0, float(current["grid_export_total_kwh"]) - float(baseline["grid_export_total_kwh"])),
+                "pricing_revision_id": pricing_revision_id,
             })
         lines = aggregate_bill_lines(snapshots, periods, site_timezone)
         for line in lines:

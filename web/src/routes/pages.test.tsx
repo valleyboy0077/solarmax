@@ -1,10 +1,33 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../api/generated";
-import { Chart, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { Chart, BillingRoute, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
-afterEach(cleanup);
+const apiMocks = vi.hoisted(() => ({ apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
+vi.mock("../api/client", () => apiMocks);
+
+afterEach(() => { cleanup(); apiMocks.apiGet.mockReset(); });
+
+describe("Billing page contract", () => {
+  it("renders the active plan name in a labelled field", async () => {
+    const bill = {
+      plan: {
+        id: 1, provider_name: "Provider", plan_name: "Future Saver", billing_cycle: "monthly",
+        billing_start_day: 1, billing_start_month: 1, daily_supply_charge_cents: 0,
+        export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "",
+      },
+      total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0,
+      today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false,
+    } satisfies components["schemas"]["BillSummaryResponse"];
+    apiMocks.apiGet.mockResolvedValueOnce(bill);
+
+    render(<BillingRoute />);
+
+    expect(await screen.findByText("Active plan")).toBeInTheDocument();
+    expect(screen.getByText("Future Saver")).toBeInTheDocument();
+  });
+});
 
 describe("Daily net bill chart", () => {
   it("chooses the newest points that fit a measured chart width", () => {

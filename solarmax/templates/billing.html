@@ -3,6 +3,7 @@
 {% block content %}
 <section class="panel form-panel">
   <div class="panel-head"><div><div class="eyebrow">Current bill</div><h2>Bill breakdown by day and TOU period</h2></div></div>
+  <p><strong>Active plan:</strong> {{ bill.plan.plan_name if bill.plan else 'None selected' }}</p>
   <p class="bill-total">Total: ${{ '%.2f'|format((bill.total_cents / 100.0) if bill.total_cents else 0) }}</p>
   <p>Grid today: {{ '%.3f'|format(bill.today_grid_import_kwh or 0) }} kWh imported · {{ '%.3f'|format(bill.today_grid_export_kwh or 0) }} kWh exported</p>
   <p>Daily supply charge: ${{ '%.2f'|format((bill.supply_charge_cents / 100.0) if bill.supply_charge_cents else 0) }} × {{ bill.supply_charge_days }} day{{ '' if bill.supply_charge_days == 1 else 's' }}</p>

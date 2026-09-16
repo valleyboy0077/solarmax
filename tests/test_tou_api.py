@@ -1,8 +1,11 @@
 import json
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
+from solarmax.db import db_session
 from solarmax.main import _tou_for_editor, app
 from solarmax.service import SolarmaxService
 
@@ -42,6 +45,13 @@ def test_tou_save_accepts_browser_normalized_control_after_edited_time(tmp_path,
     assert (off_peak["start_minute"], off_peak["end_minute"]) == (540, 960)
     saved_plan = service.list_power_plans()[0]
     assert saved_plan["daily_supply_charge_cents"] == 178.0
+    tomorrow = (datetime.now(ZoneInfo("Australia/Brisbane")).date() + timedelta(days=1)).isoformat()
+    with db_session(service.db_path) as conn:
+        revision = conn.execute(
+            "SELECT effective_from, plan_id FROM billing_plan_revisions WHERE effective_from=?",
+            (tomorrow,),
+        ).fetchone()
+    assert tuple(revision) == (tomorrow, plan["id"])
 
 
 @pytest.mark.parametrize("legacy_tiers", [

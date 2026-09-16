@@ -441,6 +441,89 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
     }
 
 
+def test_plan_and_tou_changes_preserve_prior_day_and_price_tomorrow(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    yesterday = datetime.now(site_zone).date() - timedelta(days=1)
+    tomorrow = yesterday + timedelta(days=2)
+
+    def bucket(day):
+        local = datetime.combine(day, datetime.min.time(), tzinfo=site_zone) + timedelta(hours=12)
+        return local.astimezone(timezone.utc)
+
+    def insert_metered_rollup(conn, day):
+        captured = bucket(day)
+        _insert_daily_counter(conn, 1, day.isoformat(), (0.0, 0.0, 1.0, 10.0, 0.0, 0.0))
+        conn.execute(
+            """INSERT INTO telemetry_rollups
+               (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                battery_discharge_kwh, amount_cents)
+               VALUES (1, ?, ?, 0, 0, 1, 10, 0, 0, 0)""",
+            (captured.isoformat(), (captured + timedelta(minutes=30)).isoformat()),
+        )
+
+    with db_session(service.db_path) as conn:
+        insert_metered_rollup(conn, yesterday)
+    service.recalculate_rollup_amounts()
+    before = service.current_bill_summary()
+    before_daily = next(row for row in before["daily_site_totals"] if row["day"] == yesterday.isoformat())
+    before_chart = next(row for row in service.chart_points() if row["day"] == yesterday.isoformat())
+
+    plan = service.get_power_plan(1)
+    assert plan is not None
+    service.upsert_power_plan({
+        **plan,
+        "plan_name": "Future Saver",
+        "daily_supply_charge_cents": 250.0,
+    })
+    service.save_tou_schedule(
+        1,
+        [
+            {"direction": "import", "label": "Future import", "start_minute": 0, "end_minute": 1440, "rate_cents_per_kwh": 99.0},
+            {"direction": "export", "label": "Future solar export", "start_minute": 0, "end_minute": 1440, "rate_cents_per_kwh": 1.0, "export_tier_kwh": 5.0, "export_tier_rate_cents_per_kwh": 20.0, "export_excess_rate_cents_per_kwh": 1.0},
+        ],
+        250.0,
+    )
+
+    unchanged = service.current_bill_summary()
+    unchanged_daily = next(row for row in unchanged["daily_site_totals"] if row["day"] == yesterday.isoformat())
+    assert unchanged["plan"]["plan_name"] == "Future Saver"
+    assert unchanged_daily["daily_bill_amount_cents"] == before_daily["daily_bill_amount_cents"]
+    assert next(row for row in service.chart_points() if row["day"] == yesterday.isoformat()) == before_chart
+    assert next(row for row in unchanged["rows"] if row["day"] == yesterday.isoformat() and row["direction"] == "fixed")["amount_cents"] == 0.0
+
+    with db_session(service.db_path) as conn:
+        insert_metered_rollup(conn, tomorrow)
+    service.recalculate_rollup_amounts()
+    after = service.current_bill_summary()
+    future_rows = [row for row in after["rows"] if row["day"] == tomorrow.isoformat()]
+    future_import = next(row for row in future_rows if row["direction"] == "import")
+    future_exports = [row for row in future_rows if row["direction"] == "export"]
+    future_fixed = next(row for row in future_rows if row["direction"] == "fixed")
+    future_daily = next(row for row in after["daily_site_totals"] if row["day"] == tomorrow.isoformat())
+
+    assert future_import["rate_cents_per_kwh"] == 99.0
+    assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in future_exports] == [
+        (5.0, 20.0, -100.0),
+        (5.0, 1.0, -5.0),
+    ]
+    assert future_fixed["amount_cents"] == 250.0
+    assert future_daily["daily_bill_amount_cents"] == 244.0
+    chart_by_day = {row["day"]: row["amount_cents"] for row in service.chart_points()}
+    assert chart_by_day[tomorrow.isoformat()] == future_daily["daily_bill_amount_cents"]
+
+    with db_session(service.db_path) as conn:
+        revisions = conn.execute(
+            """SELECT bpr.effective_from, tr.pricing_revision_id
+               FROM telemetry_rollups tr
+               JOIN billing_plan_revisions bpr ON bpr.id = tr.pricing_revision_id
+               ORDER BY tr.bucket_start"""
+        ).fetchall()
+    assert [row["effective_from"] for row in revisions] == ["0001-01-01", (datetime.now(site_zone).date() + timedelta(days=1)).isoformat()]
+    assert all(row["pricing_revision_id"] is not None for row in revisions)
+
+
 def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, monkeypatch):
     service = SolarmaxService(tmp_path / "solarmax.db")
     monkeypatch.setattr("solarmax.main.service", service)
