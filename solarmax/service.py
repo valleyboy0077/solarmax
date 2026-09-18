@@ -565,7 +565,8 @@ class SolarmaxService:
         Aggregate daily meters and reconciliation rows have no time-of-use
         provenance, so they must not be copied into these nullable columns.
         A legacy all-day Solar export/Solar Boost export period is the explicit
-        exception: that tariff had no Peak export, so its rollups are Off-peak.
+        exception: that tariff had no Peak export, so the authoritative daily
+        export aggregate is Off-peak even when interval rollups are incomplete.
         Other flat, shoulder, or custom-labelled periods remain unassigned.
         """
 
@@ -616,15 +617,80 @@ class SolarmaxService:
                 "grid_import_peak_kwh", "grid_import_off_peak_kwh",
                 "grid_export_peak_kwh", "grid_export_off_peak_kwh",
             )
-            for (inverter_id, day), values in totals.items():
+            daily_rows = fetch_all(
+                conn,
+                """SELECT inverter_id, day, grid_import_kwh, grid_export_kwh
+                   FROM daily_counters ORDER BY day, inverter_id""",
+            )
+            for daily_row in daily_rows:
+                inverter_id = int(daily_row["inverter_id"])
+                day = str(daily_row["day"])
+                values = totals.get((inverter_id, day), {})
+                revision = fetch_one(
+                    conn,
+                    """SELECT * FROM billing_plan_revisions
+                       WHERE effective_from <= ?
+                       ORDER BY effective_from DESC, id DESC LIMIT 1""",
+                    (day,),
+                )
+                export_periods = [
+                    period for period in self._revision_periods(revision)
+                    if period.get("direction") == "export"
+                ]
+                if any(
+                    int(period.get("start_minute", -1)) == 0
+                    and int(period.get("end_minute", -1)) == 1440
+                    and str(period.get("label", "")).strip().casefold() in {
+                        "solar export", "solar boost",
+                    }
+                    for period in export_periods
+                ):
+                    values["grid_export_peak_kwh"] = None
+                    values["grid_export_off_peak_kwh"] = max(
+                        0.0, float(daily_row["grid_export_kwh"] or 0.0)
+                    )
+
+                for direction in ("import", "export"):
+                    peak = f"grid_{direction}_peak_kwh"
+                    off_peak = f"grid_{direction}_off_peak_kwh"
+                    split_total = sum(
+                        float(values[column])
+                        for column in (peak, off_peak)
+                        if values.get(column) is not None
+                    )
+                    aggregate = max(0.0, float(daily_row[f"grid_{direction}_kwh"] or 0.0))
+                    if split_total > aggregate and split_total > 0:
+                        scale = aggregate / split_total
+                        for column in (peak, off_peak):
+                            if values.get(column) is not None:
+                                values[column] = float(values[column]) * scale
+                persisted = {
+                    column: round(float(values[column]), 6)
+                    if values.get(column) is not None else None
+                    for column in columns
+                }
+                for direction in ("import", "export"):
+                    peak = f"grid_{direction}_peak_kwh"
+                    off_peak = f"grid_{direction}_off_peak_kwh"
+                    aggregate = max(0.0, float(daily_row[f"grid_{direction}_kwh"] or 0.0))
+                    present = [
+                        column for column in (peak, off_peak)
+                        if persisted[column] is not None
+                    ]
+                    if present and sum(
+                        float(persisted[column]) for column in present
+                    ) > aggregate:
+                        target = present[-1]
+                        other = sum(float(persisted[column]) for column in present[:-1])
+                        persisted[target] = (
+                            int(max(0.0, aggregate - other) * 1_000_000)
+                            / 1_000_000
+                        )
                 conn.execute(
                     f"""UPDATE daily_counters SET
                         {', '.join(f'{column}=?' for column in columns)}
                         WHERE inverter_id=? AND day=?""",
-                    tuple(
-                        round(values[column], 6) if column in values else None
-                        for column in columns
-                    ) + (inverter_id, day),
+                    tuple(persisted[column] for column in columns) + (inverter_id, day),
                 )
 
     def close_day(self) -> dict[str, Any]:
