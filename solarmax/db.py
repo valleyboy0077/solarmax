@@ -117,6 +117,10 @@ CREATE TABLE IF NOT EXISTS daily_counters (
     load_kwh REAL NOT NULL DEFAULT 0.0,
     grid_import_kwh REAL NOT NULL DEFAULT 0.0,
     grid_export_kwh REAL NOT NULL DEFAULT 0.0,
+    grid_import_peak_kwh REAL,
+    grid_import_off_peak_kwh REAL,
+    grid_export_peak_kwh REAL,
+    grid_export_off_peak_kwh REAL,
     battery_charge_kwh REAL NOT NULL DEFAULT 0.0,
     battery_discharge_kwh REAL NOT NULL DEFAULT 0.0,
     solar_baseline_kwh REAL NOT NULL,
@@ -222,6 +226,15 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "lifetime" not in telemetry_columns:
         conn.execute("ALTER TABLE telemetry_raw ADD COLUMN lifetime INTEGER NOT NULL DEFAULT 0")
     daily_counter_columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_counters)")}
+    for column in (
+        "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+        "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+    ):
+        if column not in daily_counter_columns:
+            # Historical aggregate counters cannot authoritatively reveal
+            # when energy flowed. Keep the split NULL until interval rollups
+            # can place it in an explicitly named Peak/Off-peak TOU period.
+            conn.execute(f"ALTER TABLE daily_counters ADD COLUMN {column} REAL")
     for key in (
         "solar", "load", "grid_import", "grid_export",
         "battery_charge", "battery_discharge",

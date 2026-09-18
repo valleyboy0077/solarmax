@@ -161,6 +161,10 @@ class DailySiteTotal(BaseModel):
     load_kwh: float
     grid_import_kwh: float
     grid_export_kwh: float
+    grid_import_peak_kwh: float | None = None
+    grid_import_off_peak_kwh: float | None = None
+    grid_export_peak_kwh: float | None = None
+    grid_export_off_peak_kwh: float | None = None
     battery_charge_kwh: float
     battery_discharge_kwh: float
     daily_bill_amount_cents: float

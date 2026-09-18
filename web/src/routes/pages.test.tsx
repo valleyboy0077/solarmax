@@ -128,7 +128,23 @@ describe("Billing page contract", () => {
     expect(audit).toHaveTextContent("$3.00");
     expect(audit).toHaveTextContent("-$1.79");
     expect(audit).toHaveTextContent("$0.21");
-    expect(container.querySelector('[aria-label="Daily site totals and billing"]')).toHaveTextContent("$0.21");
+    const dailyTotals = container.querySelector('[aria-label="Daily site totals and billing"]')!;
+    expect(dailyTotals).toHaveTextContent("$0.21");
+    const dailyHeaders = Array.from(dailyTotals.querySelectorAll("thead th"));
+    expect(dailyHeaders.map((cell) => cell.textContent)).toEqual([
+      "Date", "Solar Gen", "Load Use kWh", "Grid ImportPeak", "Grid ImportOff-peak",
+      "Grid ExportPeak", "Grid ExportOff-peak", "Batt Charge kWh", "Batt Discharge kWh",
+      "Power Plan", "Daily Amount",
+    ]);
+    expect(dailyHeaders.slice(3, 7).map((cell) => Array.from(cell.children, (line) => [line.tagName, line.textContent]))).toEqual([
+      [["SPAN", "Grid Import"], ["BR", ""], ["SPAN", "Peak"]],
+      [["SPAN", "Grid Import"], ["BR", ""], ["SPAN", "Off-peak"]],
+      [["SPAN", "Grid Export"], ["BR", ""], ["SPAN", "Peak"]],
+      [["SPAN", "Grid Export"], ["BR", ""], ["SPAN", "Off-peak"]],
+    ]);
+    const dailyCells = dailyTotals.querySelectorAll("tbody td");
+    expect(dailyCells).toHaveLength(11);
+    expect(Array.from(dailyCells).slice(3, 7).every((cell) => cell.textContent === "—" && cell.getAttribute("aria-label") === "Not available")).toBe(true);
   });
 });
 

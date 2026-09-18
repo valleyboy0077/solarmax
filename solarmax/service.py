@@ -59,6 +59,7 @@ class SolarmaxService:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         init_db(db_path)
+        self._refresh_daily_tou_counters()
 
     # ---------------------------------------------------------------------
     # Settings and configuration
@@ -556,6 +557,66 @@ class SolarmaxService:
                     "UPDATE telemetry_rollups SET amount_cents=?, pricing_revision_id=? WHERE id=?",
                     (amount, revision_id, row["id"]),
                 )
+        self._refresh_daily_tou_counters()
+
+    def _refresh_daily_tou_counters(self) -> None:
+        """Persist only authoritative Peak/Off-peak interval quantities.
+
+        Aggregate daily meters and reconciliation rows have no time-of-use
+        provenance, so they must not be copied into these nullable columns.
+        Flat, shoulder, or custom-labelled periods likewise remain unassigned.
+        """
+
+        with db_session(self.db_path) as conn:
+            settings = get_settings(conn)
+            site_timezone = self._valid_timezone(
+                settings.get("site_timezone", "Australia/Brisbane")
+            )
+            plan_id = self._active_plan_id(conn)
+            fallback_periods = (
+                fetch_all(conn, "SELECT * FROM tou_periods WHERE plan_id = ?", (plan_id,))
+                if plan_id else []
+            )
+            conn.execute(
+                """UPDATE daily_counters SET
+                   grid_import_peak_kwh=NULL, grid_import_off_peak_kwh=NULL,
+                   grid_export_peak_kwh=NULL, grid_export_off_peak_kwh=NULL"""
+            )
+            totals: dict[tuple[int, str], dict[str, float]] = {}
+            for row in fetch_all(conn, "SELECT * FROM telemetry_rollups ORDER BY bucket_start"):
+                captured = datetime.fromisoformat(row["bucket_start"])
+                _, periods = self._pricing_for_rollup(
+                    conn, row, site_timezone, fallback_periods
+                )
+                day = captured.astimezone(ZoneInfo(site_timezone)).date().isoformat()
+                values = totals.setdefault((int(row["inverter_id"]), day), {})
+                for direction in ("import", "export"):
+                    period = self._match_period(periods, captured, direction, site_timezone)
+                    if period is None:
+                        continue
+                    label = str(period.get("label", "")).strip().casefold().replace("_", "-")
+                    if label.startswith(("off-peak", "off peak", "offpeak")):
+                        bucket = "off_peak"
+                    elif label.startswith("peak"):
+                        bucket = "peak"
+                    else:
+                        continue
+                    column = f"grid_{direction}_{bucket}_kwh"
+                    values[column] = values.get(column, 0.0) + float(row[f"grid_{direction}_kwh"])
+            columns = (
+                "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+                "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+            )
+            for (inverter_id, day), values in totals.items():
+                conn.execute(
+                    f"""UPDATE daily_counters SET
+                        {', '.join(f'{column}=?' for column in columns)}
+                        WHERE inverter_id=? AND day=?""",
+                    tuple(
+                        round(values[column], 6) if column in values else None
+                        for column in columns
+                    ) + (inverter_id, day),
+                )
 
     def close_day(self) -> dict[str, Any]:
         """Close the current local day and return its finalized meter totals."""
@@ -765,6 +826,10 @@ class SolarmaxService:
                       COALESCE(SUM(dc.load_kwh), 0.0) AS load_kwh,
                       COALESCE(SUM(dc.grid_import_kwh), 0.0) AS grid_import_kwh,
                       COALESCE(SUM(dc.grid_export_kwh), 0.0) AS grid_export_kwh,
+                      CASE WHEN COUNT(dc.grid_import_peak_kwh) > 0 THEN SUM(dc.grid_import_peak_kwh) END AS grid_import_peak_kwh,
+                      CASE WHEN COUNT(dc.grid_import_off_peak_kwh) > 0 THEN SUM(dc.grid_import_off_peak_kwh) END AS grid_import_off_peak_kwh,
+                      CASE WHEN COUNT(dc.grid_export_peak_kwh) > 0 THEN SUM(dc.grid_export_peak_kwh) END AS grid_export_peak_kwh,
+                      CASE WHEN COUNT(dc.grid_export_off_peak_kwh) > 0 THEN SUM(dc.grid_export_off_peak_kwh) END AS grid_export_off_peak_kwh,
                       COALESCE(SUM(dc.battery_charge_kwh), 0.0) AS battery_charge_kwh,
                       COALESCE(SUM(dc.battery_discharge_kwh), 0.0) AS battery_discharge_kwh
                FROM daily_counters dc
@@ -797,6 +862,13 @@ class SolarmaxService:
                     "solar_kwh", "load_kwh", "grid_import_kwh", "grid_export_kwh",
                     "battery_charge_kwh", "battery_discharge_kwh",
                 )},
+                **{
+                    key: round(float(row[key]), 6) if row[key] is not None else None
+                    for key in (
+                        "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+                        "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+                    )
+                },
                 "day": row["day"],
                 "daily_bill_amount_cents": round(amounts.get(row["day"], 0.0), 2),
             }

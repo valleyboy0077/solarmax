@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -450,6 +451,10 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "load_kwh": 2.0,
         "grid_import_kwh": 3.0,
         "grid_export_kwh": 4.0,
+        "grid_import_peak_kwh": None,
+        "grid_import_off_peak_kwh": None,
+        "grid_export_peak_kwh": None,
+        "grid_export_off_peak_kwh": None,
         "battery_charge_kwh": 5.0,
         "battery_discharge_kwh": 6.0,
         "daily_bill_amount_cents": -32.0,
@@ -463,6 +468,76 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "battery_charge_total_kwh": daily["battery_charge_kwh"],
         "battery_discharge_total_kwh": daily["battery_discharge_kwh"],
     }
+
+
+def test_daily_tou_columns_use_only_explicit_peak_and_off_peak_rollups(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date()
+    peak = datetime.combine(day, datetime.min.time(), tzinfo=site_zone) + timedelta(hours=17)
+    off_peak = datetime.combine(day, datetime.min.time(), tzinfo=site_zone) + timedelta(hours=10)
+    periods = [
+        {"id": 1, "plan_id": 1, "direction": "import", "label": "Peak", "start_minute": 960, "end_minute": 1260, "rate_cents_per_kwh": 40},
+        {"id": 2, "plan_id": 1, "direction": "import", "label": "Off-peak", "start_minute": 540, "end_minute": 960, "rate_cents_per_kwh": 10},
+        {"id": 3, "plan_id": 1, "direction": "export", "label": "Peak", "start_minute": 960, "end_minute": 1260, "rate_cents_per_kwh": 20},
+        {"id": 4, "plan_id": 1, "direction": "export", "label": "Off-peak", "start_minute": 540, "end_minute": 960, "rate_cents_per_kwh": 5},
+    ]
+    with db_session(service.db_path) as conn:
+        _insert_daily_counter(conn, 1, day.isoformat(), (0, 0, 10, 8, 0, 0))
+        conn.execute(
+            "UPDATE billing_plan_revisions SET tou_periods_json=? WHERE effective_from='0001-01-01'",
+            (json.dumps(periods),),
+        )
+        for captured, imported, exported in ((peak, 3.0, 2.0), (off_peak, 4.0, 1.0)):
+            captured = captured.astimezone(timezone.utc)
+            conn.execute(
+                """INSERT INTO telemetry_rollups
+                   (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                    grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                    battery_discharge_kwh, amount_cents)
+                   VALUES (1, ?, ?, 0, 0, ?, ?, 0, 0, 0)""",
+                (captured.isoformat(), (captured + timedelta(minutes=30)).isoformat(), imported, exported),
+            )
+
+    service.recalculate_rollup_amounts()
+    daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == day.isoformat())
+    assert {key: daily[key] for key in (
+        "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+        "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+    )} == {
+        "grid_import_peak_kwh": 3.0,
+        "grid_import_off_peak_kwh": 4.0,
+        "grid_export_peak_kwh": 2.0,
+        "grid_export_off_peak_kwh": 1.0,
+    }
+
+
+def test_daily_tou_migration_keeps_unassignable_aggregate_totals_null(tmp_path):
+    db_path = tmp_path / "solarmax.db"
+    service = SolarmaxService(db_path)
+    day = datetime.now(ZoneInfo("Australia/Brisbane")).date().isoformat()
+    with db_session(service.db_path) as conn:
+        for column in (
+            "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+            "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+        ):
+            conn.execute(f"ALTER TABLE daily_counters DROP COLUMN {column}")
+        _insert_daily_counter(conn, 1, day, (0, 0, 7, 9, 0, 0))
+
+    init_db(db_path)
+    with db_session(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_counters)")}
+        row = conn.execute(
+            """SELECT grid_import_peak_kwh, grid_import_off_peak_kwh,
+                      grid_export_peak_kwh, grid_export_off_peak_kwh
+               FROM daily_counters WHERE inverter_id=1 AND day=?""",
+            (day,),
+        ).fetchone()
+    assert {
+        "grid_import_peak_kwh", "grid_import_off_peak_kwh",
+        "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+    } <= columns
+    assert tuple(row) == (None, None, None, None)
 
 
 def test_plan_and_tou_changes_preserve_prior_day_and_price_tomorrow(tmp_path):
@@ -572,6 +647,10 @@ def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, 
         "load_kwh": 2.5,
         "grid_import_kwh": 3.5,
         "grid_export_kwh": 4.5,
+        "grid_import_peak_kwh": None,
+        "grid_import_off_peak_kwh": None,
+        "grid_export_peak_kwh": None,
+        "grid_export_off_peak_kwh": None,
         "battery_charge_kwh": 5.5,
         "battery_discharge_kwh": 6.5,
         "daily_bill_amount_cents": 0.0,

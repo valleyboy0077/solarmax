@@ -619,6 +619,14 @@ export interface components {
             grid_import_kwh: number;
             /** Grid Export Kwh */
             grid_export_kwh: number;
+            /** Grid Import Peak Kwh */
+            grid_import_peak_kwh?: number | null;
+            /** Grid Import Off Peak Kwh */
+            grid_import_off_peak_kwh?: number | null;
+            /** Grid Export Peak Kwh */
+            grid_export_peak_kwh?: number | null;
+            /** Grid Export Off Peak Kwh */
+            grid_export_off_peak_kwh?: number | null;
             /** Battery Charge Kwh */
             battery_charge_kwh: number;
             /** Battery Discharge Kwh */
