@@ -564,7 +564,9 @@ class SolarmaxService:
 
         Aggregate daily meters and reconciliation rows have no time-of-use
         provenance, so they must not be copied into these nullable columns.
-        Flat, shoulder, or custom-labelled periods likewise remain unassigned.
+        A legacy all-day Solar export/Solar Boost export period is the explicit
+        exception: that tariff had no Peak export, so its rollups are Off-peak.
+        Other flat, shoulder, or custom-labelled periods remain unassigned.
         """
 
         with db_session(self.db_path) as conn:
@@ -599,6 +601,13 @@ class SolarmaxService:
                         bucket = "off_peak"
                     elif label.startswith("peak"):
                         bucket = "peak"
+                    elif (
+                        direction == "export"
+                        and int(period.get("start_minute", -1)) == 0
+                        and int(period.get("end_minute", -1)) == 1440
+                        and label in {"solar export", "solar boost"}
+                    ):
+                        bucket = "off_peak"
                     else:
                         continue
                     column = f"grid_{direction}_{bucket}_kwh"
