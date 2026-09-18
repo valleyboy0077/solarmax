@@ -637,18 +637,34 @@ class SolarmaxService:
                     period for period in self._revision_periods(revision)
                     if period.get("direction") == "export"
                 ]
-                if any(
+                has_legacy_all_day_export = any(
                     int(period.get("start_minute", -1)) == 0
                     and int(period.get("end_minute", -1)) == 1440
                     and str(period.get("label", "")).strip().casefold() in {
                         "solar export", "solar boost",
                     }
                     for period in export_periods
+                )
+                export_split_columns = (
+                    "grid_export_peak_kwh", "grid_export_off_peak_kwh"
+                )
+                export_split_values = [
+                    float(values[column])
+                    for column in export_split_columns
+                    if values.get(column) is not None
+                ]
+                export_aggregate = max(
+                    0.0, float(daily_row["grid_export_kwh"] or 0.0)
+                )
+                if (
+                    has_legacy_all_day_export
+                    and (
+                        not export_split_values
+                        or sum(export_split_values) < export_aggregate
+                    )
                 ):
                     values["grid_export_peak_kwh"] = None
-                    values["grid_export_off_peak_kwh"] = max(
-                        0.0, float(daily_row["grid_export_kwh"] or 0.0)
-                    )
+                    values["grid_export_off_peak_kwh"] = export_aggregate
 
                 for direction in ("import", "export"):
                     peak = f"grid_{direction}_peak_kwh"

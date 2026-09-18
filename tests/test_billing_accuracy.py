@@ -645,6 +645,70 @@ def test_daily_tou_legacy_aggregate_uses_revision_for_day_before_plan_switch(tmp
     assert tuple(row) == (28.18, None, 28.18)
 
 
+def test_daily_tou_complete_modern_splits_survive_same_day_legacy_revision(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date() - timedelta(days=2)
+    modern_periods = [
+        {"direction": "export", "label": "Peak", "start_minute": 0,
+         "end_minute": 720, "rate_cents_per_kwh": 20.0},
+        {"direction": "export", "label": "Off-peak", "start_minute": 720,
+         "end_minute": 1440, "rate_cents_per_kwh": 5.0},
+    ]
+    legacy_periods = [{
+        "direction": "export", "label": "Solar Boost", "start_minute": 0,
+        "end_minute": 1440, "rate_cents_per_kwh": 3.0,
+    }]
+    with db_session(service.db_path) as conn:
+        _insert_daily_counter(conn, 1, day.isoformat(), (0, 0, 0, 34.17, 0, 0))
+        modern_revision_id = conn.execute(
+            "SELECT id FROM billing_plan_revisions WHERE effective_from='0001-01-01'"
+        ).fetchone()[0]
+        conn.execute(
+            """UPDATE billing_plan_revisions
+               SET effective_from=?, tou_periods_json=? WHERE id=?""",
+            (day.isoformat(), json.dumps(modern_periods), modern_revision_id),
+        )
+        conn.execute("DELETE FROM tou_periods WHERE plan_id=1")
+        conn.executemany(
+            """INSERT INTO tou_periods
+               (plan_id, direction, label, start_minute, end_minute,
+                rate_cents_per_kwh)
+               VALUES (1, ?, ?, ?, ?, ?)""",
+            [
+                (period["direction"], period["label"], period["start_minute"],
+                 period["end_minute"], period["rate_cents_per_kwh"])
+                for period in legacy_periods
+            ],
+        )
+        create_billing_plan_revision(conn, 1, day.isoformat())
+        for hour, export_kwh in ((6, 7.68), (18, 26.49)):
+            captured = datetime.combine(
+                day, time(hour=hour), tzinfo=site_zone
+            ).astimezone(timezone.utc)
+            conn.execute(
+                """INSERT INTO telemetry_rollups
+                   (inverter_id, bucket_start, bucket_end, solar_kwh, load_kwh,
+                    grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+                    battery_discharge_kwh, amount_cents, pricing_revision_id)
+                   VALUES (1, ?, ?, 0, 0, 0, ?, 0, 0, 0, ?)""",
+                (captured.isoformat(),
+                 (captured + timedelta(minutes=30)).isoformat(), export_kwh,
+                 modern_revision_id),
+            )
+
+    service.recalculate_rollup_amounts()
+
+    with db_session(service.db_path) as conn:
+        row = conn.execute(
+            """SELECT grid_export_kwh, grid_export_peak_kwh,
+                      grid_export_off_peak_kwh
+               FROM daily_counters WHERE inverter_id=1 AND day=?""",
+            (day.isoformat(),),
+        ).fetchone()
+    assert tuple(row) == (34.17, 7.68, 26.49)
+
+
 def test_daily_tou_split_totals_never_exceed_daily_aggregate(tmp_path):
     service = SolarmaxService(tmp_path / "solarmax.db")
     site_zone = ZoneInfo("Australia/Brisbane")
