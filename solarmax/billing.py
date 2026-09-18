@@ -183,7 +183,16 @@ def apply_daily_export_tier(
             float(line.get("export_excess_rate_cents_per_kwh", 0.0) or 0.0),
         )
         configured_kwh, configured_tier_rate, configured_excess_rate = configured
-        if configured_kwh <= 0:
+        # A non-tiered export period is represented by zero/default tier
+        # fields.  Treat an incomplete tier tuple the same way: preserve the
+        # ordinary period rate and amount instead of repricing the line at 0c.
+        # This is especially important for plans that have TOU export rates
+        # but no daily export allowance.
+        if not (
+            configured_kwh > 0
+            and configured_tier_rate > 0
+            and configured_excess_rate > 0
+        ):
             output.append(line)
             continue
         day = line["day"] if isinstance(line["day"], date) else date.fromisoformat(line["day"])

@@ -81,6 +81,17 @@ def test_export_tier_applies_once_per_local_day_and_splits_crossing_line():
     assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in priced] == [(8.0, 8.0, -64.0), (2.0, 3.0, -6.0)]
 
 
+def test_incomplete_export_tier_defaults_preserve_ordinary_rate():
+    periods = [
+        {"id": 20, "direction": "export", "label": "Battery Starter off-peak", "start_minute": 0, "end_minute": 960, "rate_cents_per_kwh": 3.0, "export_tier_kwh": 34.997, "export_tier_rate_cents_per_kwh": 0.0, "export_excess_rate_cents_per_kwh": 0.0},
+    ]
+    captured = datetime(2026, 1, 1, 10, tzinfo=ZoneInfo("Australia/Brisbane")).astimezone(timezone.utc)
+    rows = apply_daily_export_tier(rollup_by_day_and_period(aggregate_bill_lines([
+        {"captured_at": captured, "grid_export_kwh": 12.0},
+    ], periods)))
+    assert [(row["kwh"], row["rate_cents_per_kwh"], row["amount_cents"]) for row in rows] == [(12.0, 3.0, -36.0)]
+
+
 def test_same_day_flat_peak_export_keeps_its_rate_while_daytime_export_is_tiered():
     periods = [
         {"id": 10, "direction": "export", "label": "Peak battery export", "start_minute": 0, "end_minute": 540, "rate_cents_per_kwh": 20.0},

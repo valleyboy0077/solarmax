@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEve
 import { Check, CircleAlert, Clock, CloudSun, LoaderCircle, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, Zap } from "lucide-react";
 import { apiDelete, apiForm, apiGet, apiPost } from "../api/client";
 import type { components } from "../api/generated";
-import { formatAuDate, formatEnergy, formatMoney, formatPower } from "../lib/formatters";
+import { formatAuDate, formatEnergy, formatMoney, formatPower, toDisplayMoneyCents } from "../lib/formatters";
 import { Button } from "../components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui/states";
 import { getFittingChartPointCount } from "./chart-layout";
@@ -64,10 +64,29 @@ function BillTable({ bill }: { bill: Bill }) {
     return [key, { key, label: row.period_label, direction: row.direction }];
   })).values()];
   const days = [...new Set(rows.map((row) => row.day))];
-  const amounts = new Map(rows.map((row) => [`${row.day}:${row.direction}:${row.period_label}`, row]));
+  // Multiple TOU rows can legitimately share a label, such as off-peak
+  // 00:00–16:00 and 21:00–24:00. Aggregate them for the audit column;
+  // Map(rows.map(...)) would silently retain only the last interval.
+  const amounts = new Map<string, NonNullable<Bill["rows"]>[number]>();
+  for (const row of rows) {
+    const key = `${row.day}:${row.direction}:${row.period_label}`;
+    const existing = amounts.get(key);
+    if (!existing) {
+      amounts.set(key, { ...row });
+      continue;
+    }
+    amounts.set(key, {
+      ...existing,
+      kwh: existing.kwh + row.kwh,
+      amount_cents: existing.amount_cents === null || row.amount_cents === null
+        ? existing.amount_cents ?? row.amount_cents
+        : existing.amount_cents + row.amount_cents,
+      unpriced: existing.unpriced || row.unpriced,
+    });
+  }
   const dailyTotals = new Map(days.map((day) => {
     const dayRows = rows.filter((row) => row.day === day && row.amount_cents !== null);
-    return [day, dayRows.length ? -dayRows.reduce((total, row) => total + (row.amount_cents ?? 0), 0) : null];
+    return [day, dayRows.length ? dayRows.reduce((total, row) => total + (row.amount_cents ?? 0), 0) : null];
   }));
 
   return <div className="bill-audit-table-wrap" tabIndex={0}><table className="bill-audit-table" aria-label="Billing amounts by day and TOU bracket"><thead><tr><th>Day date</th><th>Power plan</th>{columns.map((column) => <th key={column.key} title={`${column.label} (${column.direction})`}>{column.label} {column.direction}</th>)}<th>Total for day</th></tr></thead><tbody>{days.map((day) => <tr key={day}>{<td>{formatAuDate(day)}</td>}<td>{bill.plan?.plan_name ?? "—"}</td>{columns.map((column) => { const row = amounts.get(`${day}:${column.direction}:${column.label}`); return <td className={row?.unpriced ? "unpriced" : ""} key={column.key}>{row ? formatMoney(row.amount_cents) : "—"}{row?.unpriced && <span className="unpriced-note">Unpriced</span>}</td>; })}<td className="bill-audit-total">{formatMoney(dailyTotals.get(day) ?? null)}</td></tr>)}</tbody></table></div>;
@@ -93,7 +112,7 @@ export function Chart({ points }: { points: components["schemas"]["ChartResponse
   const count = fittingPointCount === null ? points.length : Math.min(fittingPointCount, points.length);
   const visiblePoints = points.slice(Math.max(0, points.length - count));
   const max = Math.max(...visiblePoints.map((point) => Math.abs(point.amount_cents)), 1);
-  return <><div ref={chartRef} className="chart" role="img" aria-label={`Daily net bill chart. Showing the most recent ${visiblePoints.length} of ${points.length} days. Each bar represents one day's charge or credit; dates and dollar amounts are shown below. Open the data table for exact values.`}>{visiblePoints.map((point) => { const date = formatAuDate(point.day); const exactAmount = formatMoney(point.amount_cents); const tone = point.amount_cents < 0 ? "negative credit" : point.amount_cents > 0 ? "positive" : "neutral"; return <div className="chart-column" key={point.day}><div className="chart-bar-area"><span aria-hidden="true" className={`chart-bar ${tone}`} style={{ height: `${Math.max(8, Math.abs(point.amount_cents) / max * 120)}px` }} title={`${date} ${exactAmount}`} /></div><small className="chart-date">{date.slice(0, 5)}</small><span className="chart-amount" title={exactAmount}>{exactAmount}</span></div>; })}</div><details className="chart-data"><summary>View chart data table</summary><div className="table-wrap"><table><thead><tr><th>Day</th><th>Net amount</th></tr></thead><tbody>{points.map((point) => <tr key={point.day}><td>{formatAuDate(point.day)}</td><td>{formatMoney(point.amount_cents)}</td></tr>)}</tbody></table></div></details></>;
+  return <><div ref={chartRef} className="chart" role="img" aria-label={`Daily net bill chart. Showing the most recent ${visiblePoints.length} of ${points.length} days. Each bar represents one day's charge or credit; dates and dollar amounts are shown below. Open the data table for exact values.`}>{visiblePoints.map((point) => { const date = formatAuDate(point.day); const exactAmount = formatMoney(point.amount_cents); const displayCents = toDisplayMoneyCents(point.amount_cents)!; const tone = displayCents < 0 ? "negative" : displayCents > 0 ? "positive credit" : "neutral"; return <div className="chart-column" key={point.day}><div className="chart-bar-area"><span aria-hidden="true" className={`chart-bar ${tone}`} style={{ height: `${Math.max(8, Math.abs(point.amount_cents) / max * 120)}px` }} title={`${date} ${exactAmount}`} /></div><small className="chart-date">{date.slice(0, 5)}</small><span className="chart-amount" title={exactAmount}>{exactAmount}</span></div>; })}</div><details className="chart-data"><summary>View chart data table</summary><div className="table-wrap"><table><thead><tr><th>Day</th><th>Net amount</th></tr></thead><tbody>{points.map((point) => <tr key={point.day}><td>{formatAuDate(point.day)}</td><td>{formatMoney(point.amount_cents)}</td></tr>)}</tbody></table></div></details></>;
 }
 
 export function DashboardRoute() {

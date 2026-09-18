@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
 import type { components } from "../api/generated";
-import { Chart, BillingRoute, EndTimeField, PlansRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { Chart, BillingRoute, DashboardRoute, EndTimeField, PlansRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
 const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
@@ -70,8 +70,8 @@ describe("Billing page contract", () => {
     expect(table.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(table).toHaveTextContent("Off-peak");
     expect(table).toHaveTextContent("Peak");
-    expect(table).toHaveTextContent("$2.00");
-    expect(table).toHaveTextContent("$3.00");
+    expect(table).toHaveTextContent("-$2.00");
+    expect(table).toHaveTextContent("-$3.00");
     expect(table).toHaveTextContent("Total");
     expect(table).toHaveTextContent("Day date");
     expect(table).toHaveTextContent("Total for day");
@@ -80,6 +80,76 @@ describe("Billing page contract", () => {
     expect(table.querySelectorAll("tbody tr")[1]).toHaveTextContent("-$3.00");
     expect(table).not.toHaveTextContent("c/kWh");
     expect(table).not.toHaveTextContent("Energy");
+  });
+
+  it("adds duplicate-label TOU intervals instead of dropping all but the last", async () => {
+    apiMocks.apiGet.mockResolvedValueOnce({
+      plan: { id: 2, provider_name: "Origin", plan_name: "Battery Starter", billing_cycle: "monthly", billing_start_day: 13, billing_start_month: 9, daily_supply_charge_cents: 149, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "" },
+      total_cents: 0,
+      rows: [
+        { day: "2026-09-18", period_label: "Off-peak", direction: "export", kwh: 15.21, rate_cents_per_kwh: 3, amount_cents: -45.63, unpriced: false },
+        { day: "2026-09-18", period_label: "Off-peak", direction: "export", kwh: 0.01, rate_cents_per_kwh: 3, amount_cents: -0.03, unpriced: false },
+        { day: "2026-09-18", period_label: "Peak", direction: "export", kwh: 8.76, rate_cents_per_kwh: 28, amount_cents: -245.28, unpriced: false },
+      ],
+      daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 23.98, supply_charge_cents: 149, supply_charge_days: 1, billing_window_applied: true,
+    } satisfies components["schemas"]["BillSummaryResponse"]);
+
+    render(<BillingRoute />);
+
+    const table = await screen.findByRole("table", { name: "Billing amounts by day and TOU bracket" });
+    expect(table.querySelectorAll("thead th")).toHaveLength(5);
+    expect(table.querySelector("tbody tr"),).toHaveTextContent("$0.46");
+    expect(table.querySelector("tbody tr"),).toHaveTextContent("$2.45");
+    expect(table.querySelector("tbody tr"),).toHaveTextContent("$2.91");
+  });
+
+  it("presents mixed import, export, and fixed rows with user-facing signs", async () => {
+    apiMocks.apiGet.mockResolvedValueOnce({
+      plan: { id: 3, provider_name: "Origin", plan_name: "Mixed Saver", billing_cycle: "monthly", billing_start_day: 1, billing_start_month: 1, daily_supply_charge_cents: 179, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "" },
+      total_cents: -21,
+      rows: [
+        { day: "2026-09-19", period_label: "Import", direction: "import", kwh: 1, rate_cents_per_kwh: 100, amount_cents: 100, unpriced: false },
+        { day: "2026-09-19", period_label: "Export", direction: "export", kwh: 1, rate_cents_per_kwh: 300, amount_cents: -300, unpriced: false },
+        { day: "2026-09-19", period_label: "Supply", direction: "fixed", kwh: 1, rate_cents_per_kwh: null, amount_cents: 179, unpriced: false },
+      ],
+      daily: [],
+      daily_site_totals: [{ day: "2026-09-19", plan_id: 3, plan_name: "Mixed Saver", solar_kwh: 0, load_kwh: 0, grid_import_kwh: 1, grid_export_kwh: 1, battery_charge_kwh: 0, battery_discharge_kwh: 0, daily_bill_amount_cents: -21 }],
+      today_grid_import_kwh: 1,
+      today_grid_export_kwh: 1,
+      supply_charge_cents: 179,
+      supply_charge_days: 1,
+      billing_window_applied: true,
+    } satisfies components["schemas"]["BillSummaryResponse"]);
+
+    const { container } = render(<BillingRoute />);
+
+    const audit = await screen.findByRole("table", { name: "Billing amounts by day and TOU bracket" });
+    expect(audit).toHaveTextContent("-$1.00");
+    expect(audit).toHaveTextContent("$3.00");
+    expect(audit).toHaveTextContent("-$1.79");
+    expect(audit).toHaveTextContent("$0.21");
+    expect(container.querySelector('[aria-label="Daily site totals and billing"]')).toHaveTextContent("$0.21");
+  });
+});
+
+describe("Overview billing cards", () => {
+  it("presents current bill and supply charge with user-facing signs", async () => {
+    const activePlan = { ...plan(4, "Origin", "Mixed Saver"), daily_supply_charge_cents: 179 };
+    const state = {
+      settings: { theme: "classic-dark", mode: "manual", poll_interval_seconds: 30, site_name: "Solarmax", site_lat: -27.4698, site_lon: 153.0251, site_timezone: "Australia/Brisbane", active_plan_id: 4 },
+      inverters: [], power_plans: [activePlan], live: null, totals: null, live_observed_at: null, all_reachable: true,
+      bill: { plan: activePlan, total_cents: -21, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 1, today_grid_export_kwh: 1, supply_charge_cents: 179, supply_charge_days: 1, billing_window_applied: true },
+      theme: "classic-dark",
+    } satisfies components["schemas"]["DashboardStateResponse"];
+    apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
+      ? Promise.resolve(state)
+      : Promise.resolve({ points: [] } satisfies components["schemas"]["ChartResponse"]));
+
+    const { container } = render(<DashboardRoute />);
+
+    await screen.findByRole("heading", { name: "Current bill" });
+    expect(container.querySelector(".bill-total")).toHaveTextContent("$0.21");
+    expect(container.querySelector(".summary-list")).toHaveTextContent("-$1.79 × 1 day");
   });
 });
 
@@ -195,46 +265,41 @@ describe("Daily net bill chart", () => {
     }
   });
 
-  it("renders equal chart columns with exact dollar labels and the date-above-amount order", () => {
+  it("inverts raw accounting signs in chart bars, labels, and the data table", () => {
     const points = [
-      { day: "2026-09-01", amount_cents: 80 },
-      { day: "2026-09-02", amount_cents: 1234 },
-      { day: "2026-09-03", amount_cents: -5678 },
-      { day: "2026-09-04", amount_cents: 0 },
+      { day: "2026-09-01", amount_cents: 100 },
+      { day: "2026-09-02", amount_cents: -300 },
+      { day: "2026-09-03", amount_cents: 179 },
     ] satisfies components["schemas"]["ChartResponse"]["points"];
     const { container } = render(<Chart points={points} />);
 
     const chart = screen.getByRole("img", { name: /Daily net bill chart/ });
     const columns = [...chart.querySelectorAll(".chart-column")];
-    expect(columns).toHaveLength(4);
-    expect(chart.querySelectorAll(".chart-bar-area")).toHaveLength(4);
-    expect(chart.querySelectorAll(".chart-bar")).toHaveLength(4);
-    expect(chart.querySelectorAll(".chart-date")).toHaveLength(4);
-    expect(chart.querySelectorAll(".chart-amount")).toHaveLength(4);
+    expect(columns).toHaveLength(3);
+    expect(chart.querySelectorAll(".chart-bar-area")).toHaveLength(3);
+    expect(chart.querySelectorAll(".chart-bar")).toHaveLength(3);
+    expect(chart.querySelectorAll(".chart-date")).toHaveLength(3);
+    expect(chart.querySelectorAll(".chart-amount")).toHaveLength(3);
     const bars = [...chart.querySelectorAll(".chart-bar")];
-    expect(bars[0]).toHaveClass("chart-bar", "positive");
-    expect(bars[1]).toHaveClass("chart-bar", "positive");
-    expect(bars[2]).toHaveClass("chart-bar", "negative", "credit");
-    expect(bars[3]).toHaveClass("chart-bar", "neutral");
-    expect(bars[3]).not.toHaveClass("positive", "negative", "credit");
-    expect(chart).toHaveTextContent("$0.80");
-    expect(chart).toHaveTextContent("$12.34");
-    expect(chart).toHaveTextContent("-$56.78");
-    expect(chart).toHaveTextContent("$0.00");
+    expect(bars[0]).toHaveClass("chart-bar", "negative");
+    expect(bars[1]).toHaveClass("chart-bar", "positive", "credit");
+    expect(bars[2]).toHaveClass("chart-bar", "negative");
+    expect(chart).toHaveTextContent("-$1.00");
+    expect(chart).toHaveTextContent("$3.00");
+    expect(chart).toHaveTextContent("-$1.79");
     expect(screen.getByText("01/09")).toBeInTheDocument();
     expect(screen.getByText("02/09")).toBeInTheDocument();
     expect(screen.getByText("03/09")).toBeInTheDocument();
-    expect(screen.getByText("04/09")).toBeInTheDocument();
     for (const column of columns) {
       expect(column.children[0]).toHaveClass("chart-bar-area");
       expect(column.children[1]).toHaveClass("chart-date");
       expect(column.children[2]).toHaveClass("chart-amount");
     }
-    expect(container.querySelector(".chart-bar.credit")).toHaveAttribute("title", "03/09/2026 -$56.78");
-    expect(container.querySelectorAll(".chart-amount")[0]).toHaveAttribute("title", "$0.80");
-    expect(container.querySelectorAll(".chart-data tbody tr")).toHaveLength(4);
+    expect(container.querySelector(".chart-bar.credit")).toHaveAttribute("title", "02/09/2026 $3.00");
+    expect(container.querySelectorAll(".chart-amount")[0]).toHaveAttribute("title", "-$1.00");
+    expect(container.querySelectorAll(".chart-data tbody tr")).toHaveLength(3);
     expect(container.querySelector(".chart-data tbody")).toHaveTextContent("03/09/2026");
-    expect(container.querySelector(".chart-data tbody")).toHaveTextContent("-$56.78");
+    expect(container.querySelector(".chart-data tbody")).toHaveTextContent("-$1.79");
     expect(appCss).toMatch(/\.chart-bar\.negative\s*\{\s*background:var\(--danger\);\s*\}/);
     expect(appCss).toMatch(/\.chart-bar\.positive\s*\{\s*background:var\(--success\);\s*\}/);
   });
