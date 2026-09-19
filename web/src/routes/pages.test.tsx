@@ -29,6 +29,7 @@ function mockPlans(plans: components["schemas"]["PowerPlanResponse"][], activePl
     inverters: [], power_plans: plans, live: null, totals: null, live_observed_at: null, all_reachable: true,
     bill: { plan: plans[0] ?? null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
     theme: "classic-dark",
+    today_battery_soc_coverage: { day: "2026-09-19", coverage_status: "unavailable", sample_count: 0, gap_count: 0 },
   } as components["schemas"]["DashboardStateResponse"];
   const touByPath = new Map(plans.map((item) => [`/api/plans/${item.id}/tou`, tou(item.id, `${item.plan_name} import`)]));
   apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state" ? Promise.resolve(state) : Promise.resolve(touByPath.get(path)));
@@ -113,7 +114,7 @@ describe("Billing page contract", () => {
         { day: "2026-09-19", period_label: "Supply", direction: "fixed", kwh: 1, rate_cents_per_kwh: null, amount_cents: 179, unpriced: false },
       ],
       daily: [],
-      daily_site_totals: [{ day: "2026-09-19", plan_id: 3, plan_name: "Mixed Saver", solar_kwh: 0, load_kwh: 0, grid_import_kwh: 1, grid_export_kwh: 1, battery_charge_kwh: 0, battery_discharge_kwh: 0, daily_bill_amount_cents: -21 }],
+      daily_site_totals: [{ day: "2026-09-19", plan_id: 3, plan_name: "Mixed Saver", solar_kwh: 0, load_kwh: 0, grid_import_kwh: 1, grid_export_kwh: 1, battery_charge_kwh: 0, battery_discharge_kwh: 0, battery_level_min_percent: 41.5, battery_level_max_percent: 87.25, daily_bill_amount_cents: -21 }],
       today_grid_import_kwh: 1,
       today_grid_export_kwh: 1,
       supply_charge_cents: 179,
@@ -134,7 +135,7 @@ describe("Billing page contract", () => {
     expect(dailyHeaders.map((cell) => cell.textContent)).toEqual([
       "Date", "Solar Gen", "Load Use kWh", "Grid ImportOff-peak", "Grid ImportPeak",
       "Grid ExportOff-peak", "Grid ExportPeak", "Batt Charge kWh", "Batt Discharge kWh",
-      "Power Plan", "Daily Amount",
+      "MinimumSOC", "MaximumSOC", "Power Plan", "Daily Amount",
     ]);
     expect(dailyHeaders.slice(3, 7).map((cell) => Array.from(cell.children, (line) => [line.tagName, line.textContent]))).toEqual([
       [["SPAN", "Grid Import"], ["BR", ""], ["SPAN", "Off-peak"]],
@@ -143,8 +144,14 @@ describe("Billing page contract", () => {
       [["SPAN", "Grid Export"], ["BR", ""], ["SPAN", "Peak"]],
     ]);
     const dailyCells = dailyTotals.querySelectorAll("tbody td");
-    expect(dailyCells).toHaveLength(11);
+    expect(dailyCells).toHaveLength(13);
     expect(Array.from(dailyCells).slice(3, 7).every((cell) => cell.textContent === "—" && cell.getAttribute("aria-label") === "Not available")).toBe(true);
+    expect(dailyCells[9]).toHaveTextContent("41.5%");
+    expect(dailyCells[10]).toHaveTextContent("87.3%");
+    expect(Array.from(dailyTotals.querySelectorAll("thead th")).slice(9, 11).map((cell) => Array.from(cell.children, (line) => [line.tagName, line.textContent]))).toEqual([
+      [["SPAN", "Minimum"], ["BR", ""], ["SPAN", "SOC"]],
+      [["SPAN", "Maximum"], ["BR", ""], ["SPAN", "SOC"]],
+    ]);
   });
 });
 
@@ -156,6 +163,7 @@ describe("Overview billing cards", () => {
       inverters: [], power_plans: [activePlan], live: null, totals: null, live_observed_at: null, all_reachable: true,
       bill: { plan: activePlan, total_cents: -21, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 1, today_grid_export_kwh: 1, supply_charge_cents: 179, supply_charge_days: 1, billing_window_applied: true },
       theme: "classic-dark",
+      today_battery_soc_coverage: { day: "2026-09-19", coverage_status: "unavailable", sample_count: 0, gap_count: 0 },
     } satisfies components["schemas"]["DashboardStateResponse"];
     apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
       ? Promise.resolve(state)
@@ -176,6 +184,7 @@ describe("Overview live energy panel", () => {
       inverters: [], power_plans: [], live: { solar_kw: 0, load_kw: 1.05, grid_import_kw: 0.05, grid_export_kw: 0, battery_charge_kw: 0, battery_discharge_kw: 1.41, battery_level_percent: 73.4 }, totals: null, live_observed_at: "2026-09-19T03:58:54+10:00", all_reachable: true,
       bill: { plan: null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
       theme: "classic-dark",
+      today_battery_soc_coverage: { day: "2026-09-19", coverage_status: "unavailable", sample_count: 0, gap_count: 0 },
     } satisfies components["schemas"]["DashboardStateResponse"];
     apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
       ? Promise.resolve(state)
@@ -198,11 +207,13 @@ describe("Overview live energy panel", () => {
 });
 
 describe("Overview Today battery panel", () => {
-  function stateWithTodayBattery(minimum: number | null, maximum: number | null) {
+  function stateWithTodayBattery(minimum: number | null, maximum: number | null): components["schemas"]["DashboardStateResponse"] {
+    const coverageStatus: components["schemas"]["BatterySocCoverageResponse"]["coverage_status"] = minimum !== null && maximum !== null ? "complete" : "unavailable";
     return {
       settings: { theme: "classic-dark", mode: "manual", poll_interval_seconds: 30, site_name: "Solarmax", site_lat: -27.4698, site_lon: 153.0251, site_timezone: "Australia/Brisbane" },
       inverters: [], power_plans: [], live: null, live_observed_at: null, all_reachable: true,
       totals: { solar_total_kwh: 0, load_total_kwh: 0, grid_import_total_kwh: 0, grid_export_total_kwh: 0, battery_charge_total_kwh: 0, battery_discharge_total_kwh: 0, battery_level_min_percent: minimum, battery_level_max_percent: maximum },
+      today_battery_soc_coverage: { day: "2026-09-19", coverage_status: coverageStatus, min_percent: minimum, max_percent: maximum, first_sample_at: "2026-09-19T00:00:00+10:00", last_sample_at: "2026-09-19T23:59:30+10:00", sample_count: minimum === null ? 0 : 10, gap_count: minimum === null ? 0 : 0, max_gap_seconds: minimum === null ? null : 30 },
       bill: { plan: null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
       theme: "classic-dark",
     } satisfies components["schemas"]["DashboardStateResponse"];
@@ -221,17 +232,24 @@ describe("Overview Today battery panel", () => {
     const metrics = todayPanel.querySelector(".overview-metric-grid")!;
     const dischargePanel = within(metrics as HTMLElement).getByText("Battery discharge").closest(".metric")!;
     expect(batteryPanel).toHaveTextContent("Battery");
-    expect(batteryPanel).toHaveTextContent("Battery discharge");
+    expect(batteryPanel).toHaveTextContent("Minimum SOC");
     expect(batteryPanel).toHaveTextContent("41.5%");
-    expect(batteryPanel).toHaveTextContent("Battery charge");
+    expect(batteryPanel).toHaveTextContent("Maximum SOC");
     expect(batteryPanel).toHaveTextContent("87.3%");
+    expect(batteryPanel.querySelector(".today-battery-values")?.children).toHaveLength(2);
     expect(batteryPanel.compareDocumentPosition(dischargePanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(appCss).toMatch(/\.today-layout\s*\{[^}]*grid-template-columns:repeat\(6,minmax\(0,1fr\)\);[^}]*gap:12px;/);
-    expect(appCss).toMatch(/\.today-battery-level\s*\{\s*grid-column:6/);
+    expect(appCss).toMatch(/\.today-battery-level\s*\{\s*grid-column:5 \/ 7/);
+    expect(appCss).toMatch(/\.today-battery-values\s*\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   });
 
-  it("renders an explicit unavailable dash when today's battery levels are missing", async () => {
-    const state = stateWithTodayBattery(null, null);
+  it("renders observed extrema and explains partial SOC coverage", async () => {
+    const state = stateWithTodayBattery(41.5, 87.25);
+    state.today_battery_soc_coverage = {
+      day: "2026-09-19", coverage_status: "partial", min_percent: 41.5, max_percent: 87.25,
+      first_sample_at: "2026-09-19T18:19:00+10:00", last_sample_at: "2026-09-19T18:19:30+10:00",
+      sample_count: 2, gap_count: 1, max_gap_seconds: 65940,
+    };
     apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
       ? Promise.resolve(state)
       : Promise.resolve({ points: [] } satisfies components["schemas"]["ChartResponse"]));
@@ -240,8 +258,11 @@ describe("Overview Today battery panel", () => {
 
     const todayPanel = (await screen.findByRole("heading", { name: "Today" })).closest("section")!;
     const batteryValues = todayPanel.querySelectorAll(".today-battery-panel strong");
-    expect(Array.from(batteryValues).map((value) => value.textContent)).toEqual(["—", "—"]);
-    expect(todayPanel.querySelectorAll('[aria-label="Not available"]')).toHaveLength(2);
+    expect(Array.from(batteryValues).map((value) => value.textContent)).toEqual(["41.5%", "87.3%"]);
+    expect(todayPanel.querySelectorAll('[aria-label="Not available"]')).toHaveLength(0);
+    expect(todayPanel).toHaveTextContent("Observed SOC extrema so far; full-day coverage is partial.");
+    expect(todayPanel.querySelectorAll(".today-battery-values > div")).toHaveLength(2);
+    expect(appCss).toMatch(/@media \(max-width:767px\)[\s\S]*\.today-battery-level \{ grid-column:1 \/ -1; \}/);
   });
 });
 

@@ -111,6 +111,21 @@ CREATE TABLE IF NOT EXISTS telemetry_raw (
     FOREIGN KEY(inverter_id) REFERENCES inverter_profiles(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS battery_soc_daily (
+    inverter_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    min_percent REAL,
+    max_percent REAL,
+    first_sample_at TEXT,
+    last_sample_at TEXT,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    gap_count INTEGER NOT NULL DEFAULT 0,
+    max_gap_seconds REAL,
+    coverage_status TEXT NOT NULL DEFAULT 'unavailable',
+    FOREIGN KEY(inverter_id) REFERENCES inverter_profiles(id) ON DELETE CASCADE,
+    PRIMARY KEY(inverter_id, day)
+);
+
 CREATE TABLE IF NOT EXISTS daily_counters (
     inverter_id INTEGER NOT NULL,
     day TEXT NOT NULL,

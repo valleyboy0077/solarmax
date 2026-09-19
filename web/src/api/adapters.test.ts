@@ -9,6 +9,7 @@ describe("dashboardSnapshot", () => {
       inverters: [], power_plans: [], live: null, totals: null, live_observed_at: null, all_reachable: true,
       bill: { plan: null, total_cents: 0, today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
       theme: "deep-ocean",
+      today_battery_soc_coverage: { day: "2026-09-19", coverage_status: "unavailable", sample_count: 0, gap_count: 0 },
     };
     expect(dashboardSnapshot(response)).toEqual({ settings: response.settings, all_reachable: true, live_observed_at: null });
   });

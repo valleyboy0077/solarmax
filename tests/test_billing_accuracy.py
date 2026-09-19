@@ -466,6 +466,8 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "grid_export_off_peak_kwh": None,
         "battery_charge_kwh": 5.0,
         "battery_discharge_kwh": 6.0,
+        "battery_level_min_percent": None,
+        "battery_level_max_percent": None,
         "daily_bill_amount_cents": -32.0,
     }
     overview = service.dashboard_state()["totals"]
@@ -481,7 +483,7 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
     }
 
 
-def test_dashboard_today_battery_levels_use_local_day_current_reachable_samples(tmp_path):
+def test_dashboard_today_battery_soc_reports_observed_extrema_during_partial_coverage(tmp_path):
     service = SolarmaxService(tmp_path / "solarmax.db")
     site_zone = ZoneInfo(service.load_app_settings().site_timezone)
     today = datetime.now(site_zone).date()
@@ -500,6 +502,7 @@ def test_dashboard_today_battery_levels_use_local_day_current_reachable_samples(
     )
     with db_session(service.db_path) as conn:
         conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        _insert_daily_counter(conn, 1, today.isoformat(), (0, 0, 0, 0, 0, 0))
         for captured_at, level in samples:
             _insert_telemetry(
                 conn, 1, captured_at.astimezone(timezone.utc).isoformat(),
@@ -510,9 +513,18 @@ def test_dashboard_today_battery_levels_use_local_day_current_reachable_samples(
             (100, 200, 300, 400, 500, 600), 1.0,
         )
 
-    totals = service.dashboard_state()["totals"]
+    state = service.dashboard_state()
+    totals = state["totals"]
+    coverage = state["today_battery_soc_coverage"]
+    assert coverage["coverage_status"] == "partial"
+    assert coverage["sample_count"] == 2
+    assert coverage["min_percent"] == 41.5
+    assert coverage["max_percent"] == 87.25
     assert totals["battery_level_min_percent"] == 41.5
     assert totals["battery_level_max_percent"] == 87.25
+    daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today.isoformat())
+    assert daily["battery_level_min_percent"] == 41.5
+    assert daily["battery_level_max_percent"] == 87.25
 
 
 def test_dashboard_today_battery_levels_are_unavailable_without_valid_samples(tmp_path):
@@ -524,9 +536,140 @@ def test_dashboard_today_battery_levels_are_unavailable_without_valid_samples(tm
             conn, 1, captured_at.isoformat(), (100, 200, 300, 400, 500, 600), None,
         )
 
-    totals = service.dashboard_state()["totals"]
+    state = service.dashboard_state()
+    totals = state["totals"]
     assert totals["battery_level_min_percent"] is None
     assert totals["battery_level_max_percent"] is None
+    assert state["today_battery_soc_coverage"]["coverage_status"] == "unavailable"
+
+
+def test_battery_soc_summary_accepts_zero_and_hundred_and_persists_across_restart(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date() - timedelta(days=1)
+    service.save_app_settings({"poll_interval_seconds": 3600})
+    with db_session(service.db_path) as conn:
+        for hour in range(24):
+            level = 0.0 if hour == 0 else 100.0 if hour == 23 else 50.0
+            captured = datetime.combine(day, time(hour, tzinfo=site_zone))
+            _insert_telemetry(
+                conn, 1, captured.astimezone(timezone.utc).isoformat(),
+                (100, 200, 300, 400, 500, 600), level,
+            )
+
+    restarted = SolarmaxService(service.db_path)
+    with db_session(restarted.db_path) as conn:
+        summary = dict(conn.execute(
+            "SELECT * FROM battery_soc_daily WHERE inverter_id=1 AND day=?",
+            (day.isoformat(),),
+        ).fetchone())
+
+    assert summary["min_percent"] == 0.0
+    assert summary["max_percent"] == 100.0
+    assert summary["sample_count"] == 24
+    assert summary["coverage_status"] == "complete"
+    assert summary["first_sample_at"] < summary["last_sample_at"]
+
+
+def test_battery_soc_summary_starts_a_new_row_at_brisbane_midnight(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date() - timedelta(days=2)
+    before_midnight = datetime.combine(day, time(23, 59), tzinfo=site_zone)
+    after_midnight = before_midnight + timedelta(minutes=2)
+    with db_session(service.db_path) as conn:
+        _insert_telemetry(conn, 1, before_midnight.astimezone(timezone.utc).isoformat(), (1, 1, 1, 1, 1, 1), 18.0)
+        _insert_telemetry(conn, 1, after_midnight.astimezone(timezone.utc).isoformat(), (1, 1, 1, 1, 1, 1), 82.0)
+
+    restarted = SolarmaxService(service.db_path)
+    with db_session(restarted.db_path) as conn:
+        rows = conn.execute(
+            "SELECT day, min_percent, max_percent FROM battery_soc_daily WHERE inverter_id=1 AND day IN (?, ?) ORDER BY day",
+            (day.isoformat(), after_midnight.date().isoformat()),
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (day.isoformat(), 18.0, 18.0),
+        (after_midnight.date().isoformat(), 82.0, 82.0),
+    ]
+
+
+def test_battery_soc_invalid_values_are_excluded_without_changing_raw_rows(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date() - timedelta(days=1)
+    levels = (0.0, 100.0, -1.0, 101.0, None)
+    with db_session(service.db_path) as conn:
+        for index, level in enumerate(levels):
+            captured = datetime.combine(day, time(index, 0), tzinfo=site_zone)
+            _insert_telemetry(
+                conn, 1, captured.astimezone(timezone.utc).isoformat(),
+                (100, 200, 300, 400, 500, 600), level,
+            )
+        before = conn.execute("SELECT COUNT(*) FROM telemetry_raw").fetchone()[0]
+
+    restarted = SolarmaxService(service.db_path)
+    with db_session(restarted.db_path) as conn:
+        summary = dict(conn.execute(
+            "SELECT * FROM battery_soc_daily WHERE inverter_id=1 AND day=?",
+            (day.isoformat(),),
+        ).fetchone())
+        after = conn.execute("SELECT COUNT(*) FROM telemetry_raw").fetchone()[0]
+
+    assert before == after == len(levels)
+    assert summary["min_percent"] == 0.0
+    assert summary["max_percent"] == 100.0
+    assert summary["sample_count"] == 2
+
+
+def test_battery_soc_gap_marks_day_partial_and_backfill_is_idempotent(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo("Australia/Brisbane")
+    day = datetime.now(site_zone).date() - timedelta(days=1)
+    with db_session(service.db_path) as conn:
+        for captured, level in (
+            (datetime.combine(day, time.min, tzinfo=site_zone), 12.0),
+            (datetime.combine(day, time(12), tzinfo=site_zone), 44.0),
+            (datetime.combine(day, time(23, 59), tzinfo=site_zone), 88.0),
+        ):
+            _insert_telemetry(conn, 1, captured.astimezone(timezone.utc).isoformat(), (1, 1, 1, 1, 1, 1), level)
+        raw_before = conn.execute("SELECT COUNT(*) FROM telemetry_raw").fetchone()[0]
+        service._backfill_battery_soc_daily(conn)
+        service._backfill_battery_soc_daily(conn)
+        raw_after = conn.execute("SELECT COUNT(*) FROM telemetry_raw").fetchone()[0]
+        summary = dict(conn.execute(
+            "SELECT * FROM battery_soc_daily WHERE inverter_id=1 AND day=?",
+            (day.isoformat(),),
+        ).fetchone())
+
+    assert raw_after == raw_before == 3
+    assert summary["coverage_status"] == "partial"
+    assert summary["gap_count"] > 0
+    assert summary["sample_count"] == 3
+
+
+def test_battery_soc_summary_rolls_back_with_failed_raw_telemetry_transaction(tmp_path, monkeypatch):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    current = reading(10.0, True)
+    current.captured_at = datetime.now(timezone.utc)
+    current.battery_level_percent = 55.0
+
+    class OneReadingAdapter:
+        def read(self, profile, previous):
+            return current
+
+    def fail_after_soc_update(conn, inverter_id, telemetry):
+        raise RuntimeError("counter update failed")
+
+    monkeypatch.setattr("solarmax.service.get_adapter", lambda kind: OneReadingAdapter())
+    monkeypatch.setattr(service, "_update_daily_counters", fail_after_soc_update)
+
+    with pytest.raises(RuntimeError, match="counter update failed"):
+        service.poll_once()
+
+    with db_session(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM telemetry_raw").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM battery_soc_daily").fetchone()[0] == 0
+        assert conn.execute("SELECT reachable FROM inverter_profiles WHERE id=1").fetchone()[0] == 0
 
 
 def test_daily_tou_columns_use_only_explicit_peak_and_off_peak_rollups(tmp_path):
@@ -948,6 +1091,8 @@ def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, 
         "grid_export_off_peak_kwh": None,
         "battery_charge_kwh": 5.5,
         "battery_discharge_kwh": 6.5,
+        "battery_level_min_percent": None,
+        "battery_level_max_percent": None,
         "daily_bill_amount_cents": 0.0,
     }]
     assert bill["today_grid_import_kwh"] == 3.5
@@ -1169,11 +1314,12 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
     service = SolarmaxService(tmp_path / "solarmax.db")
     now = datetime.now(timezone.utc)
 
-    def sample(export_total: float) -> InverterReading:
+    def sample(export_total: float, battery_level: float) -> InverterReading:
         return InverterReading(
             captured_at=now,
             solar_kw=8.4, load_kw=3.2, grid_import_kw=0.0, grid_export_kw=0.2,
             battery_charge_kw=5.2, battery_discharge_kw=0.0,
+            battery_level_percent=battery_level,
             solar_total_kwh=5000.0, load_total_kwh=4000.0,
             grid_import_total_kwh=3000.0, grid_export_total_kwh=export_total,
             battery_charge_total_kwh=2000.0, battery_discharge_total_kwh=1000.0,
@@ -1186,14 +1332,20 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
 
     class SequenceAdapter:
         def __init__(self):
-            self.samples = [sample(100.0), sample(129.42)]
+            self.samples = [sample(100.0, 82.0), sample(129.42, 18.0)]
 
         def read(self, profile, previous):
             return self.samples.pop(0)
 
     adapter = SequenceAdapter()
     monkeypatch.setattr("solarmax.service.get_adapter", lambda kind: adapter)
+    yesterday = (datetime.now(ZoneInfo("Australia/Brisbane")).date() - timedelta(days=1)).isoformat()
+    with db_session(service.db_path) as conn:
+        _insert_daily_counter(conn, 1, yesterday, (0, 0, 0, 0, 0, 0))
     service.poll_once()
+    first_state = service.dashboard_state()
+    assert first_state["totals"]["battery_level_min_percent"] == 82.0
+    assert first_state["totals"]["battery_level_max_percent"] == 82.0
     service.poll_once()
 
     totals = service.dashboard_state()["totals"]
@@ -1204,9 +1356,13 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
         "grid_export_total_kwh": 29.42,
         "battery_charge_total_kwh": 21.0,
         "battery_discharge_total_kwh": 14.0,
-        "battery_level_min_percent": None,
-        "battery_level_max_percent": None,
+        "battery_level_min_percent": 18.0,
+        "battery_level_max_percent": 82.0,
     }
+    today = datetime.now(ZoneInfo("Australia/Brisbane")).date().isoformat()
+    daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today)
+    assert daily["battery_level_min_percent"] == 18.0
+    assert daily["battery_level_max_percent"] == 82.0
 
 
 def test_sigenstor_adapter_marks_lifetime_and_direct_daily_registers(monkeypatch):

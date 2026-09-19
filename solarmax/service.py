@@ -60,6 +60,8 @@ class SolarmaxService:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         init_db(db_path)
+        with db_session(self.db_path) as conn:
+            self._backfill_battery_soc_daily(conn)
         self._refresh_daily_tou_counters()
 
     # ---------------------------------------------------------------------
@@ -428,6 +430,11 @@ class SolarmaxService:
                         int(reading.lifetime),
                     ),
                 )
+                # This summary is written in the same transaction as the raw
+                # SOC row. It is intentionally independent of the mutable
+                # inverter reachability flag so historical coverage cannot be
+                # reinterpreted by a later outage.
+                self._update_battery_soc_daily(conn, inverter["id"], reading)
                 self._update_daily_counters(conn, inverter["id"], reading)
                 results.append({"inverter": inverter, "reading": self._reading_to_dict(reading, deltas)})
         self.rollup_completed_buckets()
@@ -924,9 +931,13 @@ class SolarmaxService:
                       CASE WHEN COUNT(dc.grid_export_peak_kwh) > 0 THEN SUM(dc.grid_export_peak_kwh) END AS grid_export_peak_kwh,
                       CASE WHEN COUNT(dc.grid_export_off_peak_kwh) > 0 THEN SUM(dc.grid_export_off_peak_kwh) END AS grid_export_off_peak_kwh,
                       COALESCE(SUM(dc.battery_charge_kwh), 0.0) AS battery_charge_kwh,
-                      COALESCE(SUM(dc.battery_discharge_kwh), 0.0) AS battery_discharge_kwh
+                      COALESCE(SUM(dc.battery_discharge_kwh), 0.0) AS battery_discharge_kwh,
+                      MIN(soc.min_percent) AS battery_level_min_percent,
+                      MAX(soc.max_percent) AS battery_level_max_percent
                FROM daily_counters dc
                JOIN inverter_profiles ip ON ip.id = dc.inverter_id
+               LEFT JOIN battery_soc_daily soc
+                      ON soc.inverter_id = dc.inverter_id AND soc.day = dc.day
                WHERE ip.enabled = 1
                GROUP BY dc.day
                ORDER BY dc.day""",
@@ -960,6 +971,7 @@ class SolarmaxService:
                     for key in (
                         "grid_import_peak_kwh", "grid_import_off_peak_kwh",
                         "grid_export_peak_kwh", "grid_export_off_peak_kwh",
+                        "battery_level_min_percent", "battery_level_max_percent",
                     )
                 },
                 "day": row["day"],
@@ -982,6 +994,10 @@ class SolarmaxService:
         with db_session(self.db_path) as conn:
             inverters = fetch_all(conn, "SELECT * FROM inverter_profiles ORDER BY id")
             plans = fetch_all(conn, "SELECT * FROM power_plans ORDER BY id")
+            self._backfill_battery_soc_daily(conn, settings.site_timezone)
+            today_battery_soc_coverage = self._today_battery_soc_coverage(
+                conn, settings.site_timezone, inverters,
+            )
             bill = self.current_bill_summary()
             live_rows = self.latest_live_state()
 
@@ -1018,7 +1034,10 @@ class SolarmaxService:
                     continue
                 for key in live_totals:
                     live_totals[key] += float(row[key])
-            battery_levels = [row.get("battery_level_percent") for row in required_rows]
+            battery_levels = [
+                self._valid_soc_value(row.get("battery_level_percent"))
+                for row in required_rows
+            ]
             live = {
                 **live_totals,
                 "battery_level_percent": (
@@ -1060,7 +1079,10 @@ class SolarmaxService:
                     (today,),
                 )
                 totals.update({key: round(float(daily_totals[key]), 6) for key in totals})
-                totals.update(self._today_battery_level_extrema(conn, settings.site_timezone))
+                totals.update({
+                    "battery_level_min_percent": today_battery_soc_coverage["min_percent"],
+                    "battery_level_max_percent": today_battery_soc_coverage["max_percent"],
+                })
 
         return {
             "settings": settings.model_dump(),
@@ -1072,58 +1094,254 @@ class SolarmaxService:
             "all_reachable": all_reachable,
             "bill": bill,
             "theme": settings.theme,
+            "today_battery_soc_coverage": today_battery_soc_coverage,
         }
 
-    def _today_battery_level_extrema(
+    def _backfill_battery_soc_daily(
+        self,
+        conn: sqlite3.Connection,
+        site_timezone: str | None = None,
+    ) -> None:
+        """Rebuild the additive SOC summary from valid raw samples only.
+
+        This is deliberately idempotent and never deletes or updates
+        ``telemetry_raw``. Running it at startup also finalizes a day that
+        crossed local midnight while the process was stopped.
+        """
+
+        settings = get_settings(conn)
+        timezone_name = self._valid_timezone(
+            site_timezone or settings.get("site_timezone", "Australia/Brisbane")
+        )
+        grouped: dict[tuple[int, str], list[tuple[datetime, float]]] = {}
+        site_zone = ZoneInfo(timezone_name)
+        for row in fetch_all(
+            conn,
+            """SELECT inverter_id, captured_at, battery_level_percent
+               FROM telemetry_raw
+               WHERE battery_level_percent IS NOT NULL
+               ORDER BY inverter_id, captured_at""",
+        ):
+            level = self._valid_soc_value(row["battery_level_percent"])
+            if level is None:
+                continue
+            captured = self._parse_captured_at(row["captured_at"])
+            day = captured.astimezone(site_zone).date().isoformat()
+            grouped.setdefault((int(row["inverter_id"]), day), []).append((captured, level))
+
+        poll_interval = self._poll_interval_seconds(settings)
+        for (inverter_id, day), samples in grouped.items():
+            self._store_battery_soc_daily(
+                conn, inverter_id, day, samples, site_zone, poll_interval,
+            )
+
+    def _update_battery_soc_daily(
+        self,
+        conn: sqlite3.Connection,
+        inverter_id: int,
+        reading: InverterReading,
+    ) -> None:
+        """Update one inverter/day summary after its raw row is inserted."""
+
+        settings = get_settings(conn)
+        timezone_name = self._valid_timezone(settings.get("site_timezone", "Australia/Brisbane"))
+        site_zone = ZoneInfo(timezone_name)
+        captured = self._parse_captured_at(reading.captured_at.isoformat())
+        day = captured.astimezone(site_zone).date().isoformat()
+        samples: list[tuple[datetime, float]] = []
+        for row in fetch_all(
+            conn,
+            """SELECT captured_at, battery_level_percent
+               FROM telemetry_raw
+               WHERE inverter_id = ? AND battery_level_percent IS NOT NULL
+               ORDER BY captured_at""",
+            (inverter_id,),
+        ):
+            level = self._valid_soc_value(row["battery_level_percent"])
+            if level is None:
+                continue
+            sample_at = self._parse_captured_at(row["captured_at"])
+            if sample_at.astimezone(site_zone).date().isoformat() == day:
+                samples.append((sample_at, level))
+        self._store_battery_soc_daily(
+            conn, inverter_id, day, samples, site_zone, self._poll_interval_seconds(settings),
+        )
+
+    def _store_battery_soc_daily(
+        self,
+        conn: sqlite3.Connection,
+        inverter_id: int,
+        day: str,
+        samples: list[tuple[datetime, float]],
+        site_zone: ZoneInfo,
+        poll_interval_seconds: int,
+    ) -> None:
+        """Persist extrema and coverage facts for one inverter/local day."""
+
+        ordered = sorted(samples, key=lambda item: item[0])
+        day_date = date.fromisoformat(day)
+        if not ordered:
+            conn.execute(
+                """INSERT INTO battery_soc_daily
+                   (inverter_id, day, min_percent, max_percent,
+                    first_sample_at, last_sample_at, sample_count,
+                    gap_count, max_gap_seconds, coverage_status)
+                   VALUES (?, ?, NULL, NULL, NULL, NULL, 0, 0, NULL, 'unavailable')
+                   ON CONFLICT(inverter_id, day) DO UPDATE SET
+                       min_percent=excluded.min_percent,
+                       max_percent=excluded.max_percent,
+                       first_sample_at=excluded.first_sample_at,
+                       last_sample_at=excluded.last_sample_at,
+                       sample_count=excluded.sample_count,
+                       gap_count=excluded.gap_count,
+                       max_gap_seconds=excluded.max_gap_seconds,
+                       coverage_status=excluded.coverage_status""",
+                (inverter_id, day),
+            )
+            return
+
+        local_times = [sample_at.astimezone(site_zone) for sample_at, _ in ordered]
+        day_start = datetime.combine(day_date, time.min, tzinfo=site_zone)
+        day_end = datetime.combine(day_date + timedelta(days=1), time.min, tzinfo=site_zone)
+        now_local = datetime.now(site_zone)
+        observed_end = day_end
+        if day_date == now_local.date():
+            observed_end = min(day_end, now_local)
+
+        gaps: list[float] = [
+            max(0.0, (local_times[0] - day_start).total_seconds()),
+            *[
+                max(0.0, (current - previous).total_seconds())
+                for previous, current in zip(local_times, local_times[1:])
+            ],
+            max(0.0, (observed_end - local_times[-1]).total_seconds()),
+        ]
+        tolerance = max(60.0, float(poll_interval_seconds) * 2.0)
+        gap_count = sum(1 for gap in gaps if gap > tolerance)
+        max_gap_seconds = max(gaps, default=0.0)
+        coverage_status = (
+            "complete"
+            if day_date < now_local.date() and gap_count == 0
+            else "partial"
+        )
+        conn.execute(
+            """INSERT INTO battery_soc_daily
+               (inverter_id, day, min_percent, max_percent,
+                first_sample_at, last_sample_at, sample_count,
+                gap_count, max_gap_seconds, coverage_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(inverter_id, day) DO UPDATE SET
+                   min_percent=excluded.min_percent,
+                   max_percent=excluded.max_percent,
+                   first_sample_at=excluded.first_sample_at,
+                   last_sample_at=excluded.last_sample_at,
+                   sample_count=excluded.sample_count,
+                   gap_count=excluded.gap_count,
+                   max_gap_seconds=excluded.max_gap_seconds,
+                   coverage_status=excluded.coverage_status""",
+            (
+                inverter_id,
+                day,
+                round(min(level for _, level in ordered), 6),
+                round(max(level for _, level in ordered), 6),
+                ordered[0][0].isoformat(),
+                ordered[-1][0].isoformat(),
+                len(ordered),
+                gap_count,
+                round(max_gap_seconds, 3),
+                coverage_status,
+            ),
+        )
+
+    @staticmethod
+    def _valid_soc_value(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed) or not 0.0 <= parsed <= 100.0:
+            return None
+        return parsed
+
+    @staticmethod
+    def _parse_captured_at(value: str | datetime) -> datetime:
+        captured = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if captured.tzinfo is None:
+            captured = captured.replace(tzinfo=timezone.utc)
+        return captured
+
+    @staticmethod
+    def _poll_interval_seconds(settings: dict[str, str]) -> int:
+        try:
+            return max(5, int(settings.get("poll_interval_seconds", "30")))
+        except (TypeError, ValueError):
+            return 30
+
+    def _today_battery_soc_coverage(
         self,
         conn: sqlite3.Connection,
         site_timezone: str,
-    ) -> dict[str, float | None]:
-        """Return today's valid battery-level extrema from current telemetry.
+        inverters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Return persisted SOC coverage for today's enabled inverter set.
 
-        Battery level is an instantaneous SOC measurement, not an energy
-        counter. Only samples belonging to the configured local day and rows
-        from enabled, currently reachable inverters are eligible. Missing or
-        out-of-range values remain unavailable rather than being inferred from
-        lifetime registers or other battery metrics.
+        Reachability is deliberately absent from this query. A successful
+        sample remains part of the local day's historical coverage even after
+        a later poll reports that inverter as unreachable.
         """
 
         site_zone = ZoneInfo(self._valid_timezone(site_timezone))
-        local_today = datetime.now(site_zone).date()
-        day_start = datetime.combine(local_today, time.min, tzinfo=site_zone)
-        day_end = datetime.combine(local_today + timedelta(days=1), time.min, tzinfo=site_zone)
-        rows = fetch_all(
+        today = datetime.now(site_zone).date()
+        day = today.isoformat()
+        enabled = [
+            row for row in (inverters if inverters is not None else fetch_all(
+                conn, "SELECT * FROM inverter_profiles ORDER BY id"
+            ))
+            if int(row["enabled"])
+        ]
+        summaries = fetch_all(
             conn,
-            """
-            SELECT tr.captured_at, tr.battery_level_percent
-            FROM telemetry_raw tr
-            JOIN inverter_profiles ip ON ip.id = tr.inverter_id
-            WHERE ip.enabled = 1
-              AND ip.reachable = 1
-              AND tr.battery_level_percent IS NOT NULL
-              AND tr.battery_level_percent BETWEEN 0 AND 100
-            """,
+            """SELECT * FROM battery_soc_daily WHERE day = ?""",
+            (day,),
         )
-        levels: list[float] = []
-        for row in rows:
-            captured = datetime.fromisoformat(row["captured_at"])
-            if captured.tzinfo is None:
-                captured = captured.replace(tzinfo=timezone.utc)
-            captured_local = captured.astimezone(site_zone)
-            if not day_start <= captured_local < day_end:
-                continue
-            level = float(row["battery_level_percent"])
-            if math.isfinite(level):
-                levels.append(level)
+        by_inverter = {int(row["inverter_id"]): row for row in summaries}
+        selected = [by_inverter.get(int(row["id"])) for row in enabled]
+        sample_count = sum(int(row["sample_count"]) for row in selected if row is not None)
+        gap_count = sum(int(row["gap_count"]) for row in selected if row is not None)
+        max_gap = max(
+            (float(row["max_gap_seconds"]) for row in selected
+             if row is not None and row["max_gap_seconds"] is not None),
+            default=None,
+        )
+        first_samples = [row["first_sample_at"] for row in selected if row and row["first_sample_at"]]
+        last_samples = [row["last_sample_at"] for row in selected if row and row["last_sample_at"]]
+        statuses = [row["coverage_status"] for row in selected if row is not None]
+        has_all_summaries = len(selected) == len(enabled) and all(row is not None for row in selected)
+        if not enabled or not sample_count:
+            coverage_status = "unavailable"
+        elif has_all_summaries and all(status == "complete" for status in statuses):
+            coverage_status = "complete"
+        else:
+            coverage_status = "partial"
 
-        if not levels:
-            return {
-                "battery_level_min_percent": None,
-                "battery_level_max_percent": None,
-            }
+        observed_min = min(
+            float(row["min_percent"]) for row in selected
+            if row is not None and row["min_percent"] is not None
+        ) if any(row is not None and row["min_percent"] is not None for row in selected) else None
+        observed_max = max(
+            float(row["max_percent"]) for row in selected
+            if row is not None and row["max_percent"] is not None
+        ) if any(row is not None and row["max_percent"] is not None for row in selected) else None
         return {
-            "battery_level_min_percent": round(min(levels), 6),
-            "battery_level_max_percent": round(max(levels), 6),
+            "day": day,
+            "coverage_status": coverage_status,
+            "min_percent": round(observed_min, 6) if observed_min is not None else None,
+            "max_percent": round(observed_max, 6) if observed_max is not None else None,
+            "first_sample_at": min(first_samples) if first_samples else None,
+            "last_sample_at": max(last_samples) if last_samples else None,
+            "sample_count": sample_count,
+            "gap_count": gap_count,
+            "max_gap_seconds": round(max_gap, 3) if max_gap is not None else None,
         }
 
     def chart_points(self, days: int = 14) -> list[dict[str, Any]]:

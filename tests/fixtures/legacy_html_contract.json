@@ -5,7 +5,7 @@
   "/plans": {"contains": ["Power plans", "Import/export rates"], "forms": [{"action": "/api/plans", "fields": ["plan_id", "provider_name", "plan_name", "billing_cycle", "billing_start_day", "billing_start_month", "notes"]}, {"action": "/api/tou/1", "fields": ["daily_supply_charge", "payload"]}]},
   "/billing": {"contains": ["Current bill", "Active plan:", "Bill breakdown by day and TOU period"], "forms": []}
   ,"api": [
-    {"method": "GET", "path": "/api/state", "status": 200, "json_keys": ["settings", "inverters", "power_plans", "live", "totals", "all_reachable", "bill", "theme", "live_observed_at"]},
+    {"method": "GET", "path": "/api/state", "status": 200, "json_keys": ["settings", "inverters", "power_plans", "live", "totals", "all_reachable", "bill", "theme", "live_observed_at", "today_battery_soc_coverage"]},
     {"method": "GET", "path": "/api/chart?days=1", "status": 200, "json_keys": ["points"]},
     {"method": "GET", "path": "/api/bill", "status": 200, "json_keys": ["plan", "total_cents", "rows", "daily", "daily_site_totals", "today_grid_import_kwh", "today_grid_export_kwh", "supply_charge_cents", "supply_charge_days", "billing_window_applied", "lines", "rollups"]},
     {"method": "POST", "path": "/api/close-day", "status": 200, "json_keys": ["day", "solar_kwh", "grid_export_kwh", "grid_import_kwh"]},

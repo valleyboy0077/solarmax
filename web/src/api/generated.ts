@@ -359,6 +359,42 @@ export interface components {
             /** Active Plan Id */
             active_plan_id?: number | null;
         };
+        /**
+         * BatterySocCoverageResponse
+         * @description Persisted coverage and sampled extrema for the current local day.
+         */
+        BatterySocCoverageResponse: {
+            /**
+             * Day
+             * Format: date
+             */
+            day: string;
+            /**
+             * Coverage Status
+             * @enum {string}
+             */
+            coverage_status: "complete" | "partial" | "unavailable";
+            /** Min Percent */
+            min_percent?: number | null;
+            /** Max Percent */
+            max_percent?: number | null;
+            /** First Sample At */
+            first_sample_at?: string | null;
+            /** Last Sample At */
+            last_sample_at?: string | null;
+            /**
+             * Sample Count
+             * @default 0
+             */
+            sample_count: number;
+            /**
+             * Gap Count
+             * @default 0
+             */
+            gap_count: number;
+            /** Max Gap Seconds */
+            max_gap_seconds?: number | null;
+        };
         /** BillSummaryResponse */
         BillSummaryResponse: {
             plan: components["schemas"]["PowerPlanResponse"] | null;
@@ -635,6 +671,10 @@ export interface components {
             battery_charge_kwh: number;
             /** Battery Discharge Kwh */
             battery_discharge_kwh: number;
+            /** Battery Level Min Percent */
+            battery_level_min_percent?: number | null;
+            /** Battery Level Max Percent */
+            battery_level_max_percent?: number | null;
             /** Daily Bill Amount Cents */
             daily_bill_amount_cents: number;
         };
@@ -657,6 +697,7 @@ export interface components {
              * @enum {string}
              */
             theme: "classic-light" | "classic-dark" | "deep-ocean" | "ember-core";
+            today_battery_soc_coverage: components["schemas"]["BatterySocCoverageResponse"];
         };
         /** HTTPValidationError */
         HTTPValidationError: {

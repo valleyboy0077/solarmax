@@ -19,6 +19,7 @@ ModeName = Literal["manual", "ai"]
 BillingCycle = Literal["monthly", "quarterly"]
 TouDirection = Literal["import", "export"]
 AdapterKind = Literal["sigenstor_ec_20_0_tp_au"]
+BatterySocCoverageStatus = Literal["complete", "partial", "unavailable"]
 
 
 class AppSettings(BaseModel):
@@ -167,6 +168,8 @@ class DailySiteTotal(BaseModel):
     grid_export_off_peak_kwh: float | None = None
     battery_charge_kwh: float
     battery_discharge_kwh: float
+    battery_level_min_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
     daily_bill_amount_cents: float
 
 
@@ -191,6 +194,20 @@ class DailyEnergyTotalsResponse(BaseModel):
     battery_discharge_total_kwh: float
     battery_level_min_percent: float | None = Field(default=None, ge=0, le=100)
     battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
+
+
+class BatterySocCoverageResponse(BaseModel):
+    """Persisted coverage and sampled extrema for the current local day."""
+
+    day: date
+    coverage_status: BatterySocCoverageStatus
+    min_percent: float | None = Field(default=None, ge=0, le=100)
+    max_percent: float | None = Field(default=None, ge=0, le=100)
+    first_sample_at: datetime | None = None
+    last_sample_at: datetime | None = None
+    sample_count: int = Field(default=0, ge=0)
+    gap_count: int = Field(default=0, ge=0)
+    max_gap_seconds: float | None = Field(default=None, ge=0)
 
 
 class InverterResponse(InverterProfile):
@@ -236,6 +253,7 @@ class DashboardStateResponse(BaseModel):
     all_reachable: bool
     bill: BillSummaryResponse
     theme: ThemeName
+    today_battery_soc_coverage: BatterySocCoverageResponse
 
 
 class ChartPointResponse(BaseModel):
