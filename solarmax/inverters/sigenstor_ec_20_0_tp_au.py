@@ -190,14 +190,14 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
                     ip_address, key, exc,
                 )
 
-        # Read SOC and EMS mode for logging (not stored in the reading yet).
+        battery_level_percent = None
         try:
-            soc_pct = read_input_registers(ip_address, PLANT_UNIT_ID, SOC_REGISTER, 1)[0] / 10.0
+            battery_level_percent = read_input_registers(ip_address, PLANT_UNIT_ID, SOC_REGISTER, 1)[0] / 10.0
             ems_mode = read_input_registers(ip_address, PLANT_UNIT_ID, EMS_MODE_REGISTER, 1)[0]
             logger.info(
                 "SigenStor %s live: solar=%.3f kW load=%.3f kW grid=%+.3f kW battery=%+.3f kW soc=%.1f%% mode=%d",
                 ip_address, power_kw["solar_kw"], power_kw["load_kw"],
-                power_kw["grid_kw"], power_kw["battery_kw"], soc_pct, ems_mode,
+                power_kw["grid_kw"], power_kw["battery_kw"], battery_level_percent, ems_mode,
             )
         except ModbusError:
             # SOC/mode are non-critical; continue with the power values.
@@ -220,6 +220,7 @@ class SigenStorEC20TPAUAdapter(InverterAdapter):
             grid_export_kw=round(grid_export_kw, 3),
             battery_charge_kw=round(battery_charge_kw, 3),
             battery_discharge_kw=round(battery_discharge_kw, 3),
+            battery_level_percent=battery_level_percent,
             **totals_kwh,
             lifetime=True,
             daily_totals_kwh=daily_totals_kwh,

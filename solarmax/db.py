@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS telemetry_raw (
     grid_export_kw REAL NOT NULL,
     battery_charge_kw REAL NOT NULL,
     battery_discharge_kw REAL NOT NULL,
+    battery_level_percent REAL,
     solar_total_kwh REAL NOT NULL,
     load_total_kwh REAL NOT NULL,
     grid_import_total_kwh REAL NOT NULL,
@@ -225,6 +226,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     telemetry_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_raw)")}
     if "lifetime" not in telemetry_columns:
         conn.execute("ALTER TABLE telemetry_raw ADD COLUMN lifetime INTEGER NOT NULL DEFAULT 0")
+    if "battery_level_percent" not in telemetry_columns:
+        conn.execute("ALTER TABLE telemetry_raw ADD COLUMN battery_level_percent REAL")
     daily_counter_columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_counters)")}
     for column in (
         "grid_import_peak_kwh", "grid_import_off_peak_kwh",

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
@@ -166,6 +166,34 @@ describe("Overview billing cards", () => {
     await screen.findByRole("heading", { name: "Current bill" });
     expect(container.querySelector(".bill-total")).toHaveTextContent("$0.21");
     expect(container.querySelector(".summary-list")).toHaveTextContent("-$1.79 × 1 day");
+  });
+});
+
+describe("Overview live energy panel", () => {
+  it("places the live Battery level panel above Battery discharge without the Zap icon", async () => {
+    const state = {
+      settings: { theme: "classic-dark", mode: "manual", poll_interval_seconds: 30, site_name: "Solarmax", site_lat: -27.4698, site_lon: 153.0251, site_timezone: "Australia/Brisbane" },
+      inverters: [], power_plans: [], live: { solar_kw: 0, load_kw: 1.05, grid_import_kw: 0.05, grid_export_kw: 0, battery_charge_kw: 0, battery_discharge_kw: 1.41, battery_level_percent: 73.4 }, totals: null, live_observed_at: "2026-09-19T03:58:54+10:00", all_reachable: true,
+      bill: { plan: null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
+      theme: "classic-dark",
+    } satisfies components["schemas"]["DashboardStateResponse"];
+    apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
+      ? Promise.resolve(state)
+      : Promise.resolve({ points: [] } satisfies components["schemas"]["ChartResponse"]));
+
+    render(<DashboardRoute />);
+
+    const livePanel = (await screen.findByRole("heading", { name: "Live energy" })).closest("section")!;
+    const levelPanel = livePanel.querySelector(".live-energy-level .metric")!;
+    const metrics = livePanel.querySelector(".overview-metric-grid")!;
+    const dischargePanel = within(metrics as HTMLElement).getByText("Battery discharge").closest(".metric")!;
+    expect(levelPanel).toHaveTextContent("Battery level");
+    expect(levelPanel).toHaveTextContent("73.4%");
+    expect(levelPanel.compareDocumentPosition(dischargePanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(livePanel.querySelector("svg")).toBeNull();
+    expect(appCss).toMatch(/\.live-energy-layout\s*\{[^}]*grid-template-columns:repeat\(6,minmax\(0,1fr\)\);[^}]*gap:12px;/);
+    expect(appCss).toMatch(/\.live-energy-layout > \.section-heading\s*\{\s*grid-column:1 \/ 6;/);
+    expect(appCss).toMatch(/\.live-energy-level\s*\{\s*grid-column:6/);
   });
 });
 

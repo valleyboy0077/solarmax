@@ -22,6 +22,7 @@ class InverterReading:
     grid_export_total_kwh: float
     battery_charge_total_kwh: float
     battery_discharge_total_kwh: float
+    battery_level_percent: float | None = None
     # Whether the six ``*_total_kwh`` values originate from inverter lifetime
     # registers rather than an adapter-derived session counter. Persisted with
     # every raw row so a change of source cannot create a nonsensical delta.

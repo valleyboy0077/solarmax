@@ -397,10 +397,10 @@ class SolarmaxService:
                 conn.execute(
                     """
                     INSERT INTO telemetry_raw
-                    (inverter_id, captured_at, solar_kw, load_kw, grid_import_kw, grid_export_kw, battery_charge_kw, battery_discharge_kw,
+                    (inverter_id, captured_at, solar_kw, load_kw, grid_import_kw, grid_export_kw, battery_charge_kw, battery_discharge_kw, battery_level_percent,
                      solar_total_kwh, load_total_kwh, grid_import_total_kwh, grid_export_total_kwh, battery_charge_total_kwh, battery_discharge_total_kwh,
                      delta_solar_kwh, delta_load_kwh, delta_grid_import_kwh, delta_grid_export_kwh, delta_battery_charge_kwh, delta_battery_discharge_kwh, lifetime)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         inverter["id"],
@@ -411,6 +411,7 @@ class SolarmaxService:
                         reading.grid_export_kw,
                         reading.battery_charge_kw,
                         reading.battery_discharge_kw,
+                        reading.battery_level_percent,
                         reading.solar_total_kwh,
                         reading.load_total_kwh,
                         reading.grid_import_total_kwh,
@@ -998,7 +999,7 @@ class SolarmaxService:
             totals = None
             live_observed_at = None
         else:
-            totals = {
+            live_totals = {
                 "solar_kw": 0.0,
                 "load_kw": 0.0,
                 "grid_import_kw": 0.0,
@@ -1014,9 +1015,18 @@ class SolarmaxService:
             for row in live_rows:
                 if int(row["inverter_id"]) not in enabled_ids or int(row["reachable"]) != 1:
                     continue
-                for key in totals:
-                    totals[key] += float(row[key])
-            live = totals
+                for key in live_totals:
+                    live_totals[key] += float(row[key])
+            battery_levels = [row.get("battery_level_percent") for row in required_rows]
+            live = {
+                **live_totals,
+                "battery_level_percent": (
+                    float(battery_levels[0])
+                    if battery_levels and all(level is not None for level in battery_levels)
+                    and all(float(level) == float(battery_levels[0]) for level in battery_levels)
+                    else None
+                ),
+            }
 
             # Aggregate just the site's local-day counters. Direct device-day
             # registers are used where available; grid uses a persisted
@@ -1299,6 +1309,10 @@ class SolarmaxService:
             grid_export_kw=float(row["grid_export_kw"]),
             battery_charge_kw=float(row["battery_charge_kw"]),
             battery_discharge_kw=float(row["battery_discharge_kw"]),
+            battery_level_percent=(
+                float(row["battery_level_percent"])
+                if row.get("battery_level_percent") is not None else None
+            ),
             solar_total_kwh=float(row["solar_total_kwh"]),
             load_total_kwh=float(row["load_total_kwh"]),
             grid_import_total_kwh=float(row["grid_import_total_kwh"]),
@@ -1317,6 +1331,7 @@ class SolarmaxService:
             "grid_export_kw": reading.grid_export_kw,
             "battery_charge_kw": reading.battery_charge_kw,
             "battery_discharge_kw": reading.battery_discharge_kw,
+            "battery_level_percent": reading.battery_level_percent,
             "solar_total_kwh": reading.solar_total_kwh,
             "load_total_kwh": reading.load_total_kwh,
             "grid_import_total_kwh": reading.grid_import_total_kwh,

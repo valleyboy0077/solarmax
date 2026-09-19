@@ -736,6 +736,8 @@ export interface components {
             battery_charge_kw: number;
             /** Battery Discharge Kw */
             battery_discharge_kw: number;
+            /** Battery Level Percent */
+            battery_level_percent?: number | null;
         };
         /** MutationErrorDetail */
         MutationErrorDetail: {

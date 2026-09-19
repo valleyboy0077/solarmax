@@ -179,6 +179,7 @@ class LivePowerResponse(BaseModel):
     grid_export_kw: float
     battery_charge_kw: float
     battery_discharge_kw: float
+    battery_level_percent: float | None = Field(default=None, ge=0, le=100)
 
 
 class DailyEnergyTotalsResponse(BaseModel):
