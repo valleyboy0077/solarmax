@@ -361,7 +361,7 @@ export interface components {
         };
         /**
          * BatterySocCoverageResponse
-         * @description Persisted coverage and sampled extrema for the current local day.
+         * @description Persisted observed coverage plus the current-day display SOC maximum.
          */
         BatterySocCoverageResponse: {
             /**
@@ -378,6 +378,14 @@ export interface components {
             min_percent?: number | null;
             /** Max Percent */
             max_percent?: number | null;
+            /** Display Max Percent */
+            display_max_percent?: number | null;
+            /**
+             * Display Max Percent Source
+             * @default unavailable
+             * @enum {string}
+             */
+            display_max_percent_source: "observed" | "derived_from_grid_export_off_peak" | "unavailable";
             /** First Sample At */
             first_sample_at?: string | null;
             /** Last Sample At */
@@ -636,10 +644,19 @@ export interface components {
             battery_level_min_percent?: number | null;
             /** Battery Level Max Percent */
             battery_level_max_percent?: number | null;
+            /**
+             * Battery Level Max Percent Source
+             * @default unavailable
+             * @enum {string}
+             */
+            battery_level_max_percent_source: "observed" | "derived_from_grid_export_off_peak" | "unavailable";
         };
         /**
          * DailySiteTotal
          * @description Authoritative local-day energy totals and the corresponding bill.
+         *
+         *     The maximum SOC is a display value; its source identifies when it was
+         *     derived from the billing export split rather than directly observed.
          */
         DailySiteTotal: {
             /**
@@ -675,6 +692,12 @@ export interface components {
             battery_level_min_percent?: number | null;
             /** Battery Level Max Percent */
             battery_level_max_percent?: number | null;
+            /**
+             * Battery Level Max Percent Source
+             * @default unavailable
+             * @enum {string}
+             */
+            battery_level_max_percent_source: "observed" | "derived_from_grid_export_off_peak" | "unavailable";
             /** Daily Bill Amount Cents */
             daily_bill_amount_cents: number;
         };

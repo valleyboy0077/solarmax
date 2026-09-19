@@ -468,6 +468,7 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "battery_discharge_kwh": 6.0,
         "battery_level_min_percent": None,
         "battery_level_max_percent": None,
+        "battery_level_max_percent_source": "unavailable",
         "daily_bill_amount_cents": -32.0,
     }
     overview = service.dashboard_state()["totals"]
@@ -480,6 +481,7 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "battery_discharge_total_kwh": daily["battery_discharge_kwh"],
         "battery_level_min_percent": None,
         "battery_level_max_percent": None,
+        "battery_level_max_percent_source": "unavailable",
     }
 
 
@@ -525,6 +527,78 @@ def test_dashboard_today_battery_soc_reports_observed_extrema_during_partial_cov
     daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today.isoformat())
     assert daily["battery_level_min_percent"] == 41.5
     assert daily["battery_level_max_percent"] == 87.25
+
+
+def test_positive_daily_grid_export_off_peak_derives_display_max_soc_without_raw_100_sample(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo(service.load_app_settings().site_timezone)
+    today = datetime.now(site_zone).date().isoformat()
+    captured_at = datetime.now(timezone.utc)
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        _insert_daily_counter(conn, 1, today, (0, 0, 0, 4.0, 0, 0))
+        conn.execute(
+            "UPDATE daily_counters SET grid_export_off_peak_kwh=0.25 WHERE inverter_id=1 AND day=?",
+            (today,),
+        )
+        _insert_telemetry(
+            conn, 1, captured_at.isoformat(), (100, 200, 300, 400, 500, 600), 87.25,
+        )
+
+    state = service.dashboard_state()
+    daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today)
+    coverage = state["today_battery_soc_coverage"]
+
+    assert daily["grid_export_off_peak_kwh"] == 0.25
+    assert daily["battery_level_max_percent"] == 100.0
+    assert daily["battery_level_max_percent_source"] == "derived_from_grid_export_off_peak"
+    assert coverage["max_percent"] == 87.25
+    assert coverage["display_max_percent"] == 100.0
+    assert coverage["display_max_percent_source"] == "derived_from_grid_export_off_peak"
+    assert state["totals"]["battery_level_max_percent"] == 100.0
+    assert state["totals"]["battery_level_max_percent_source"] == "derived_from_grid_export_off_peak"
+    with db_session(service.db_path) as conn:
+        assert conn.execute(
+            "SELECT MAX(battery_level_percent) FROM telemetry_raw WHERE inverter_id=1",
+        ).fetchone()[0] == 87.25
+
+
+@pytest.mark.parametrize(
+    ("off_peak", "observed_max", "expected_max", "expected_source"),
+    [
+        (0.0, 87.25, 87.25, "observed"),
+        (None, None, None, "unavailable"),
+    ],
+)
+def test_zero_or_null_daily_grid_export_off_peak_preserves_observed_or_null_soc(
+    tmp_path, off_peak, observed_max, expected_max, expected_source,
+):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo(service.load_app_settings().site_timezone)
+    today = datetime.now(site_zone).date().isoformat()
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        _insert_daily_counter(conn, 1, today, (0, 0, 0, 4.0, 0, 0))
+        conn.execute(
+            "UPDATE daily_counters SET grid_export_off_peak_kwh=? WHERE inverter_id=1 AND day=?",
+            (off_peak, today),
+        )
+        _insert_telemetry(
+            conn, 1, datetime.now(timezone.utc).isoformat(),
+            (100, 200, 300, 400, 500, 600), observed_max,
+        )
+
+    state = service.dashboard_state()
+    daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today)
+    coverage = state["today_battery_soc_coverage"]
+
+    assert daily["battery_level_max_percent"] == expected_max
+    assert daily["battery_level_max_percent_source"] == expected_source
+    assert coverage["max_percent"] == observed_max
+    assert coverage["display_max_percent"] == expected_max
+    assert coverage["display_max_percent_source"] == expected_source
+    assert state["totals"]["battery_level_max_percent"] == expected_max
+    assert state["totals"]["battery_level_max_percent_source"] == expected_source
 
 
 def test_dashboard_today_battery_levels_are_unavailable_without_valid_samples(tmp_path):
@@ -1093,6 +1167,7 @@ def test_no_active_plan_still_returns_authoritative_daily_site_totals(tmp_path, 
         "battery_discharge_kwh": 6.5,
         "battery_level_min_percent": None,
         "battery_level_max_percent": None,
+        "battery_level_max_percent_source": "unavailable",
         "daily_bill_amount_cents": 0.0,
     }]
     assert bill["today_grid_import_kwh"] == 3.5
@@ -1129,6 +1204,7 @@ def test_dashboard_totals_use_daily_enabled_inverter_counters_not_lifetime_value
         "grid_import_total_kwh": 33.0, "grid_export_total_kwh": 44.0,
         "battery_charge_total_kwh": 55.0, "battery_discharge_total_kwh": 66.0,
         "battery_level_min_percent": None, "battery_level_max_percent": None,
+        "battery_level_max_percent_source": "unavailable",
     }
     assert state["live"]["solar_kw"] == 2.0
     rendered = templates.get_template("dashboard.html").render(
@@ -1204,7 +1280,8 @@ def test_daily_grid_bootstraps_from_persisted_midnight_lifetime_baseline(tmp_pat
         "battery_charge_total_kwh": 27.15,
         "battery_discharge_total_kwh": 18.48,
         "battery_level_min_percent": None,
-        "battery_level_max_percent": None,
+        "battery_level_max_percent": 100.0,
+        "battery_level_max_percent_source": "derived_from_grid_export_off_peak",
     }
     bill = state["bill"]
     assert bill["today_grid_import_kwh"] == 0.05
@@ -1357,12 +1434,14 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
         "battery_charge_total_kwh": 21.0,
         "battery_discharge_total_kwh": 14.0,
         "battery_level_min_percent": 18.0,
-        "battery_level_max_percent": 82.0,
+        "battery_level_max_percent": 100.0,
+        "battery_level_max_percent_source": "derived_from_grid_export_off_peak",
     }
     today = datetime.now(ZoneInfo("Australia/Brisbane")).date().isoformat()
     daily = next(row for row in service.current_bill_summary()["daily_site_totals"] if row["day"] == today)
     assert daily["battery_level_min_percent"] == 18.0
-    assert daily["battery_level_max_percent"] == 82.0
+    assert daily["battery_level_max_percent"] == 100.0
+    assert daily["battery_level_max_percent_source"] == "derived_from_grid_export_off_peak"
 
 
 def test_sigenstor_adapter_marks_lifetime_and_direct_daily_registers(monkeypatch):

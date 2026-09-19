@@ -20,6 +20,11 @@ BillingCycle = Literal["monthly", "quarterly"]
 TouDirection = Literal["import", "export"]
 AdapterKind = Literal["sigenstor_ec_20_0_tp_au"]
 BatterySocCoverageStatus = Literal["complete", "partial", "unavailable"]
+BatterySocDisplaySource = Literal[
+    "observed",
+    "derived_from_grid_export_off_peak",
+    "unavailable",
+]
 
 
 class AppSettings(BaseModel):
@@ -153,7 +158,11 @@ class BillingLine(BaseModel):
 
 
 class DailySiteTotal(BaseModel):
-    """Authoritative local-day energy totals and the corresponding bill."""
+    """Authoritative local-day energy totals and the corresponding bill.
+
+    The maximum SOC is a display value; its source identifies when it was
+    derived from the billing export split rather than directly observed.
+    """
 
     day: date
     plan_id: int | None = None
@@ -170,6 +179,7 @@ class DailySiteTotal(BaseModel):
     battery_discharge_kwh: float
     battery_level_min_percent: float | None = Field(default=None, ge=0, le=100)
     battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_level_max_percent_source: BatterySocDisplaySource = "unavailable"
     daily_bill_amount_cents: float
 
 
@@ -194,15 +204,18 @@ class DailyEnergyTotalsResponse(BaseModel):
     battery_discharge_total_kwh: float
     battery_level_min_percent: float | None = Field(default=None, ge=0, le=100)
     battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_level_max_percent_source: BatterySocDisplaySource = "unavailable"
 
 
 class BatterySocCoverageResponse(BaseModel):
-    """Persisted coverage and sampled extrema for the current local day."""
+    """Persisted observed coverage plus the current-day display SOC maximum."""
 
     day: date
     coverage_status: BatterySocCoverageStatus
     min_percent: float | None = Field(default=None, ge=0, le=100)
     max_percent: float | None = Field(default=None, ge=0, le=100)
+    display_max_percent: float | None = Field(default=None, ge=0, le=100)
+    display_max_percent_source: BatterySocDisplaySource = "unavailable"
     first_sample_at: datetime | None = None
     last_sample_at: datetime | None = None
     sample_count: int = Field(default=0, ge=0)

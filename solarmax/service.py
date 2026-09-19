@@ -958,8 +958,16 @@ class SolarmaxService:
                 )
                 if revision is not None:
                     plans.setdefault(str(bill_row["day"]), dict(revision))
-        return [
-            {
+        daily_site_totals = []
+        for row in rows:
+            observed_max = (
+                round(float(row["battery_level_max_percent"]), 6)
+                if row["battery_level_max_percent"] is not None else None
+            )
+            display_max, display_source = self._battery_soc_display_max(
+                observed_max, row["grid_export_off_peak_kwh"],
+            )
+            daily_site_totals.append({
                 "plan_id": plans.get(str(row["day"]), {}).get("plan_id"),
                 "plan_name": plans.get(str(row["day"]), {}).get("plan_name"),
                 **{key: round(float(row[key]), 6) for key in (
@@ -971,14 +979,15 @@ class SolarmaxService:
                     for key in (
                         "grid_import_peak_kwh", "grid_import_off_peak_kwh",
                         "grid_export_peak_kwh", "grid_export_off_peak_kwh",
-                        "battery_level_min_percent", "battery_level_max_percent",
+                        "battery_level_min_percent",
                     )
                 },
+                "battery_level_max_percent": display_max,
+                "battery_level_max_percent_source": display_source,
                 "day": row["day"],
                 "daily_bill_amount_cents": round(amounts.get(row["day"], 0.0), 2),
-            }
-            for row in rows
-        ]
+            })
+        return daily_site_totals
 
     def dashboard_state(self) -> dict[str, Any]:
         """Build the dashboard payload consumed by the UI and MCP server.
@@ -999,6 +1008,28 @@ class SolarmaxService:
                 conn, settings.site_timezone, inverters,
             )
             bill = self.current_bill_summary()
+            today = datetime.now(ZoneInfo(settings.site_timezone)).date().isoformat()
+            today_daily = next(
+                (row for row in bill.get("daily_site_totals", []) if row["day"] == today),
+                None,
+            )
+            if today_daily is not None:
+                display_max, display_source = self._battery_soc_display_max(
+                    today_battery_soc_coverage["max_percent"],
+                    today_daily["grid_export_off_peak_kwh"],
+                )
+                today_battery_soc_coverage.update({
+                    "display_max_percent": display_max,
+                    "display_max_percent_source": display_source,
+                })
+            else:
+                display_max, display_source = self._battery_soc_display_max(
+                    today_battery_soc_coverage["max_percent"], None,
+                )
+                today_battery_soc_coverage.update({
+                    "display_max_percent": display_max,
+                    "display_max_percent_source": display_source,
+                })
             live_rows = self.latest_live_state()
 
         # Determine reachability across all enabled inverters. An inverter is
@@ -1081,7 +1112,12 @@ class SolarmaxService:
                 totals.update({key: round(float(daily_totals[key]), 6) for key in totals})
                 totals.update({
                     "battery_level_min_percent": today_battery_soc_coverage["min_percent"],
-                    "battery_level_max_percent": today_battery_soc_coverage["max_percent"],
+                    "battery_level_max_percent": today_battery_soc_coverage[
+                        "display_max_percent"
+                    ],
+                    "battery_level_max_percent_source": today_battery_soc_coverage[
+                        "display_max_percent_source"
+                    ],
                 })
 
         return {
@@ -1264,6 +1300,22 @@ class SolarmaxService:
         return parsed
 
     @staticmethod
+    def _battery_soc_display_max(
+        observed_max: float | None,
+        grid_export_off_peak_kwh: float | None,
+    ) -> tuple[float | None, str]:
+        """Return the display maximum without changing observed SOC facts."""
+
+        if (
+            grid_export_off_peak_kwh is not None
+            and float(grid_export_off_peak_kwh) > 0.0
+        ):
+            return 100.0, "derived_from_grid_export_off_peak"
+        if observed_max is not None:
+            return round(float(observed_max), 6), "observed"
+        return None, "unavailable"
+
+    @staticmethod
     def _parse_captured_at(value: str | datetime) -> datetime:
         captured = value if isinstance(value, datetime) else datetime.fromisoformat(value)
         if captured.tzinfo is None:
@@ -1337,6 +1389,10 @@ class SolarmaxService:
             "coverage_status": coverage_status,
             "min_percent": round(observed_min, 6) if observed_min is not None else None,
             "max_percent": round(observed_max, 6) if observed_max is not None else None,
+            "display_max_percent": round(observed_max, 6) if observed_max is not None else None,
+            "display_max_percent_source": (
+                "observed" if observed_max is not None else "unavailable"
+            ),
             "first_sample_at": min(first_samples) if first_samples else None,
             "last_sample_at": max(last_samples) if last_samples else None,
             "sample_count": sample_count,
