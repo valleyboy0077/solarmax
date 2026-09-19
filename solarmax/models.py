@@ -189,6 +189,8 @@ class DailyEnergyTotalsResponse(BaseModel):
     grid_export_total_kwh: float
     battery_charge_total_kwh: float
     battery_discharge_total_kwh: float
+    battery_level_min_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
 
 
 class InverterResponse(InverterProfile):

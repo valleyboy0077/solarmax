@@ -197,6 +197,54 @@ describe("Overview live energy panel", () => {
   });
 });
 
+describe("Overview Today battery panel", () => {
+  function stateWithTodayBattery(minimum: number | null, maximum: number | null) {
+    return {
+      settings: { theme: "classic-dark", mode: "manual", poll_interval_seconds: 30, site_name: "Solarmax", site_lat: -27.4698, site_lon: 153.0251, site_timezone: "Australia/Brisbane" },
+      inverters: [], power_plans: [], live: null, live_observed_at: null, all_reachable: true,
+      totals: { solar_total_kwh: 0, load_total_kwh: 0, grid_import_total_kwh: 0, grid_export_total_kwh: 0, battery_charge_total_kwh: 0, battery_discharge_total_kwh: 0, battery_level_min_percent: minimum, battery_level_max_percent: maximum },
+      bill: { plan: null, total_cents: 0, rows: [], daily: [], daily_site_totals: [], today_grid_import_kwh: 0, today_grid_export_kwh: 0, supply_charge_cents: 0, supply_charge_days: 0, billing_window_applied: false },
+      theme: "classic-dark",
+    } satisfies components["schemas"]["DashboardStateResponse"];
+  }
+
+  it("renders today's battery extrema above the Battery discharge card", async () => {
+    const state = stateWithTodayBattery(41.5, 87.25);
+    apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
+      ? Promise.resolve(state)
+      : Promise.resolve({ points: [] } satisfies components["schemas"]["ChartResponse"]));
+
+    render(<DashboardRoute />);
+
+    const todayPanel = (await screen.findByRole("heading", { name: "Today" })).closest("section")!;
+    const batteryPanel = todayPanel.querySelector(".today-battery-level .metric")!;
+    const metrics = todayPanel.querySelector(".overview-metric-grid")!;
+    const dischargePanel = within(metrics as HTMLElement).getByText("Battery discharge").closest(".metric")!;
+    expect(batteryPanel).toHaveTextContent("Battery");
+    expect(batteryPanel).toHaveTextContent("Battery discharge");
+    expect(batteryPanel).toHaveTextContent("41.5%");
+    expect(batteryPanel).toHaveTextContent("Battery charge");
+    expect(batteryPanel).toHaveTextContent("87.3%");
+    expect(batteryPanel.compareDocumentPosition(dischargePanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(appCss).toMatch(/\.today-layout\s*\{[^}]*grid-template-columns:repeat\(6,minmax\(0,1fr\)\);[^}]*gap:12px;/);
+    expect(appCss).toMatch(/\.today-battery-level\s*\{\s*grid-column:6/);
+  });
+
+  it("renders an explicit unavailable dash when today's battery levels are missing", async () => {
+    const state = stateWithTodayBattery(null, null);
+    apiMocks.apiGet.mockImplementation((path: string) => path === "/api/state"
+      ? Promise.resolve(state)
+      : Promise.resolve({ points: [] } satisfies components["schemas"]["ChartResponse"]));
+
+    render(<DashboardRoute />);
+
+    const todayPanel = (await screen.findByRole("heading", { name: "Today" })).closest("section")!;
+    const batteryValues = todayPanel.querySelectorAll(".today-battery-panel strong");
+    expect(Array.from(batteryValues).map((value) => value.textContent)).toEqual(["—", "—"]);
+    expect(todayPanel.querySelectorAll('[aria-label="Not available"]')).toHaveLength(2);
+  });
+});
+
 describe("Plans & TOU tabs", () => {
   it("renders named tabs and pairs the selected plan with its TOU editor", async () => {
     const plans = [plan(1, "Provider One", "Solar Saver"), plan(2, "Provider Two", "Night Saver")];

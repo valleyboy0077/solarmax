@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, time, timezone, timedelta
@@ -1058,7 +1059,8 @@ class SolarmaxService:
                     """,
                     (today,),
                 )
-            totals.update({key: round(float(daily_totals[key]), 6) for key in totals})
+                totals.update({key: round(float(daily_totals[key]), 6) for key in totals})
+                totals.update(self._today_battery_level_extrema(conn, settings.site_timezone))
 
         return {
             "settings": settings.model_dump(),
@@ -1070,6 +1072,58 @@ class SolarmaxService:
             "all_reachable": all_reachable,
             "bill": bill,
             "theme": settings.theme,
+        }
+
+    def _today_battery_level_extrema(
+        self,
+        conn: sqlite3.Connection,
+        site_timezone: str,
+    ) -> dict[str, float | None]:
+        """Return today's valid battery-level extrema from current telemetry.
+
+        Battery level is an instantaneous SOC measurement, not an energy
+        counter. Only samples belonging to the configured local day and rows
+        from enabled, currently reachable inverters are eligible. Missing or
+        out-of-range values remain unavailable rather than being inferred from
+        lifetime registers or other battery metrics.
+        """
+
+        site_zone = ZoneInfo(self._valid_timezone(site_timezone))
+        local_today = datetime.now(site_zone).date()
+        day_start = datetime.combine(local_today, time.min, tzinfo=site_zone)
+        day_end = datetime.combine(local_today + timedelta(days=1), time.min, tzinfo=site_zone)
+        rows = fetch_all(
+            conn,
+            """
+            SELECT tr.captured_at, tr.battery_level_percent
+            FROM telemetry_raw tr
+            JOIN inverter_profiles ip ON ip.id = tr.inverter_id
+            WHERE ip.enabled = 1
+              AND ip.reachable = 1
+              AND tr.battery_level_percent IS NOT NULL
+              AND tr.battery_level_percent BETWEEN 0 AND 100
+            """,
+        )
+        levels: list[float] = []
+        for row in rows:
+            captured = datetime.fromisoformat(row["captured_at"])
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            captured_local = captured.astimezone(site_zone)
+            if not day_start <= captured_local < day_end:
+                continue
+            level = float(row["battery_level_percent"])
+            if math.isfinite(level):
+                levels.append(level)
+
+        if not levels:
+            return {
+                "battery_level_min_percent": None,
+                "battery_level_max_percent": None,
+            }
+        return {
+            "battery_level_min_percent": round(min(levels), 6),
+            "battery_level_max_percent": round(max(levels), 6),
         }
 
     def chart_points(self, days: int = 14) -> list[dict[str, Any]]:

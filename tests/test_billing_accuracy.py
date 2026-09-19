@@ -406,18 +406,25 @@ def test_currency_parser_and_supply_charge_are_independent_of_import_kwh(tmp_pat
     assert sum(row["amount_cents"] for row in imports) == 13.96
 
 
-def _insert_telemetry(conn, inverter_id: int, captured_at: str, totals: tuple[float, ...]) -> None:
+def _insert_telemetry(
+    conn,
+    inverter_id: int,
+    captured_at: str,
+    totals: tuple[float, ...],
+    battery_level_percent: float | None = None,
+) -> None:
     conn.execute(
         """INSERT INTO telemetry_raw
            (inverter_id, captured_at, solar_kw, load_kw, grid_import_kw,
             grid_export_kw, battery_charge_kw, battery_discharge_kw,
+            battery_level_percent,
             solar_total_kwh, load_total_kwh, grid_import_total_kwh,
             grid_export_total_kwh, battery_charge_total_kwh,
             battery_discharge_total_kwh, delta_solar_kwh, delta_load_kwh,
             delta_grid_import_kwh, delta_grid_export_kwh,
             delta_battery_charge_kwh, delta_battery_discharge_kwh, lifetime)
-           VALUES (?, ?, 1, 2, 3, 4, 5, 6, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 1)""",
-        (inverter_id, captured_at, *totals),
+           VALUES (?, ?, 1, 2, 3, 4, 5, 6, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 1)""",
+        (inverter_id, captured_at, battery_level_percent, *totals),
     )
 
 
@@ -469,7 +476,57 @@ def test_daily_site_totals_use_all_six_authoritative_counters_and_daily_billing(
         "grid_export_total_kwh": daily["grid_export_kwh"],
         "battery_charge_total_kwh": daily["battery_charge_kwh"],
         "battery_discharge_total_kwh": daily["battery_discharge_kwh"],
+        "battery_level_min_percent": None,
+        "battery_level_max_percent": None,
     }
+
+
+def test_dashboard_today_battery_levels_use_local_day_current_reachable_samples(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    site_zone = ZoneInfo(service.load_app_settings().site_timezone)
+    today = datetime.now(site_zone).date()
+    local_midnight = datetime.combine(today, time.min, tzinfo=site_zone)
+    disabled_id = service.upsert_inverter({
+        "name": "Disabled battery",
+        "model": "SigenStor",
+        "adapter_kind": "sigenstor_ec_20_0_tp_au",
+        "enabled": False,
+    })
+    samples = (
+        (local_midnight - timedelta(minutes=1), 3.0),  # prior local day
+        (local_midnight + timedelta(minutes=1), 41.5),
+        (local_midnight + timedelta(hours=12), 87.25),
+        (local_midnight + timedelta(hours=13), 101.0),  # invalid SOC
+    )
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        for captured_at, level in samples:
+            _insert_telemetry(
+                conn, 1, captured_at.astimezone(timezone.utc).isoformat(),
+                (100, 200, 300, 400, 500, 600), level,
+            )
+        _insert_telemetry(
+            conn, disabled_id, (local_midnight + timedelta(hours=14)).astimezone(timezone.utc).isoformat(),
+            (100, 200, 300, 400, 500, 600), 1.0,
+        )
+
+    totals = service.dashboard_state()["totals"]
+    assert totals["battery_level_min_percent"] == 41.5
+    assert totals["battery_level_max_percent"] == 87.25
+
+
+def test_dashboard_today_battery_levels_are_unavailable_without_valid_samples(tmp_path):
+    service = SolarmaxService(tmp_path / "solarmax.db")
+    captured_at = datetime.now(timezone.utc)
+    with db_session(service.db_path) as conn:
+        conn.execute("UPDATE inverter_profiles SET reachable=1 WHERE id=1")
+        _insert_telemetry(
+            conn, 1, captured_at.isoformat(), (100, 200, 300, 400, 500, 600), None,
+        )
+
+    totals = service.dashboard_state()["totals"]
+    assert totals["battery_level_min_percent"] is None
+    assert totals["battery_level_max_percent"] is None
 
 
 def test_daily_tou_columns_use_only_explicit_peak_and_off_peak_rollups(tmp_path):
@@ -926,6 +983,7 @@ def test_dashboard_totals_use_daily_enabled_inverter_counters_not_lifetime_value
         "solar_total_kwh": 11.0, "load_total_kwh": 22.0,
         "grid_import_total_kwh": 33.0, "grid_export_total_kwh": 44.0,
         "battery_charge_total_kwh": 55.0, "battery_discharge_total_kwh": 66.0,
+        "battery_level_min_percent": None, "battery_level_max_percent": None,
     }
     assert state["live"]["solar_kw"] == 2.0
     rendered = templates.get_template("dashboard.html").render(
@@ -1000,6 +1058,8 @@ def test_daily_grid_bootstraps_from_persisted_midnight_lifetime_baseline(tmp_pat
         "grid_export_total_kwh": 29.42,
         "battery_charge_total_kwh": 27.15,
         "battery_discharge_total_kwh": 18.48,
+        "battery_level_min_percent": None,
+        "battery_level_max_percent": None,
     }
     bill = state["bill"]
     assert bill["today_grid_import_kwh"] == 0.05
@@ -1144,6 +1204,8 @@ def test_dashboard_today_shape_uses_direct_daily_and_lifetime_grid_baseline(tmp_
         "grid_export_total_kwh": 29.42,
         "battery_charge_total_kwh": 21.0,
         "battery_discharge_total_kwh": 14.0,
+        "battery_level_min_percent": None,
+        "battery_level_max_percent": None,
     }
 
 

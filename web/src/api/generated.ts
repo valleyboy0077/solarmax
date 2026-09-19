@@ -596,6 +596,10 @@ export interface components {
             battery_charge_total_kwh: number;
             /** Battery Discharge Total Kwh */
             battery_discharge_total_kwh: number;
+            /** Battery Level Min Percent */
+            battery_level_min_percent?: number | null;
+            /** Battery Level Max Percent */
+            battery_level_max_percent?: number | null;
         };
         /**
          * DailySiteTotal
