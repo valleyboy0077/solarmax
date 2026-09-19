@@ -60,7 +60,7 @@ function TodayBatteryPanel({ minimum, maximum, coverage }: { minimum: number | n
     ? "Observed SOC extrema so far; full-day coverage is partial."
     : "SOC extrema are unavailable because no valid samples were observed.";
   const provenanceMessage = maximumSource === "derived_from_grid_export_off_peak"
-    ? "Maximum SOC is displayed as 100.0% because Grid Export Off-peak was positive; no 100% raw SOC sample is implied."
+    ? null
     : !complete ? coverageMessage : null;
   return <div className="metric today-battery-panel" aria-label="Today battery SOC"><span>Battery SOC</span><div className="today-battery-values"><div><span>Minimum SOC</span><strong aria-label={display(minimumValue) === "—" ? "Not available" : undefined}>{display(minimumValue)}</strong></div><div><span>Maximum SOC</span><strong aria-label={display(maximumValue) === "—" ? "Not available" : undefined}>{display(maximumValue)}</strong></div></div>{provenanceMessage && <p className="today-battery-message">{provenanceMessage}</p>}</div>;
 }

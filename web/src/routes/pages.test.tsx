@@ -247,7 +247,7 @@ describe("Overview Today battery panel", () => {
     expect(appCss).toMatch(/\.today-battery-values\s*\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   });
 
-  it("renders a derived 100.0% maximum with explicit provenance", async () => {
+  it("renders a derived 100.0% maximum without the raw SOC explanation", async () => {
     const state = stateWithTodayBattery(41.5, 87.25);
     state.totals = { ...state.totals!, battery_level_max_percent: 100, battery_level_max_percent_source: "derived_from_grid_export_off_peak" };
     state.today_battery_soc_coverage = {
@@ -264,8 +264,7 @@ describe("Overview Today battery panel", () => {
 
     const todayPanel = (await screen.findByRole("heading", { name: "Today" })).closest("section")!;
     expect(Array.from(todayPanel.querySelectorAll(".today-battery-panel strong")).map((value) => value.textContent)).toEqual(["41.5%", "100.0%"]);
-    expect(todayPanel).toHaveTextContent("Grid Export Off-peak was positive");
-    expect(todayPanel).toHaveTextContent("no 100% raw SOC sample is implied");
+    expect(todayPanel).not.toHaveTextContent("Maximum SOC is displayed as 100.0% because Grid Export Off-peak was positive; no 100% raw SOC sample is implied.");
   });
 
   it("renders observed extrema and explains partial SOC coverage", async () => {
