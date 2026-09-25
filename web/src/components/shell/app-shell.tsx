@@ -1,4 +1,4 @@
-import { Menu, RefreshCw, Settings2, SunMedium, BatteryCharging, ClipboardList, ReceiptText, LayoutDashboard } from "lucide-react";
+import { Menu, RefreshCw, Settings2, SunMedium, BatteryCharging, ClipboardList, ReceiptText, LayoutDashboard, CalendarDays } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useState } from "react";
@@ -6,7 +6,7 @@ import { useDashboardPoll } from "../../hooks/use-dashboard-poll";
 import { Button } from "../ui/button";
 
 const navigation = [
-  ["/", "Overview", LayoutDashboard], ["/inverters", "Inverters", BatteryCharging], ["/plans", "Plans & TOU", ClipboardList], ["/billing", "Billing", ReceiptText], ["/settings", "Settings", Settings2],
+  ["/", "Overview", LayoutDashboard], ["/inverters", "Inverters", BatteryCharging], ["/plans", "Plans & TOU", ClipboardList], ["/billing", "Billing", ReceiptText], ["/sigstor20-daily", "Sigstor20 daily", CalendarDays], ["/sigstor20-hourly", "Sigstor20 hourly", CalendarDays], ["/settings", "Settings", Settings2],
 ] as const;
 
 function Navigation({ close }: { close?: () => void }) {

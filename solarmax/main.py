@@ -24,7 +24,7 @@ from .config import RuntimeConfig
 from .models import (
     BillSummaryResponse, ChartResponse, CloseDayResponse, DashboardStateResponse,
     MutationErrorResponse, MutationSuccessResponse, TouPeriodsResponse,
-    WeatherRecommendationResponse,
+    Sigstor20HourlyResponse, WeatherRecommendationResponse,
 )
 from .service import PlanDeletionError, SolarmaxService
 
@@ -254,6 +254,45 @@ def billing_page(request: Request) -> Response:
     return _page_response(request, "billing.html", {"state": state, "bill": bill})
 
 
+@app.get("/sigstor20-daily", response_class=HTMLResponse)
+def sigstor20_daily_page(request: Request) -> Response:
+    state = service.dashboard_state()
+    bill = service.current_bill_summary()
+    return _page_response(
+        request,
+        "sigstor20_daily.html",
+        {"state": state, "daily_site_totals": bill["daily_site_totals"]},
+    )
+
+
+@app.get("/sigstor20-hourly", response_class=HTMLResponse)
+def sigstor20_hourly_page(
+    request: Request, day: date | None = None, mode: str = "both"
+) -> Response:
+    if _serve_react_webui():
+        return _page_response(request, "sigstor20_hourly.html", {})
+    hourly_data = service.sigstor20_hourly_data(day)
+    selected_mode = mode if mode in {"cumulative", "hourly", "both"} else "both"
+    state = {"settings": {"theme": service.load_app_settings().theme}}
+    return _page_response(
+        request,
+        "sigstor20_hourly.html",
+        {
+            "state": state,
+            "hourly_data": hourly_data,
+            "mode": selected_mode,
+            "energy_columns": (
+                ("solar_kwh", "Solar"),
+                ("load_kwh", "Load"),
+                ("grid_import_kwh", "Grid import"),
+                ("grid_export_kwh", "Grid export"),
+                ("battery_charge_kwh", "Battery charge"),
+                ("battery_discharge_kwh", "Battery discharge"),
+            ),
+        },
+    )
+
+
 @app.get("/api/state", response_model=DashboardStateResponse)
 def api_state() -> dict[str, Any]:
     return service.dashboard_state()
@@ -269,6 +308,11 @@ def api_chart(days: int = 14) -> dict[str, Any]:
 @app.get("/api/bill", response_model=BillSummaryResponse)
 def api_bill() -> dict[str, Any]:
     return service.current_bill_summary()
+
+
+@app.get("/api/sigstor20-hourly", response_model=Sigstor20HourlyResponse)
+def api_sigstor20_hourly(day: date | None = None) -> dict[str, Any]:
+    return service.sigstor20_hourly_data(day)
 
 
 @app.post("/api/close-day", response_model=CloseDayResponse)

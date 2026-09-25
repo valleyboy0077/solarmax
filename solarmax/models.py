@@ -25,6 +25,8 @@ BatterySocDisplaySource = Literal[
     "derived_from_grid_export_off_peak",
     "unavailable",
 ]
+HourlyCoverageStatus = Literal["complete", "partial", "unavailable", "future"]
+HourlyBatteryDirection = Literal["Charging", "Discharging", "—"]
 
 
 class AppSettings(BaseModel):
@@ -181,6 +183,53 @@ class DailySiteTotal(BaseModel):
     battery_level_max_percent: float | None = Field(default=None, ge=0, le=100)
     battery_level_max_percent_source: BatterySocDisplaySource = "unavailable"
     daily_bill_amount_cents: float
+
+
+class Sigstor20HourlyEnergyResponse(BaseModel):
+    """Hourly energy values in kWh; null means boundary data was unavailable."""
+
+    solar_kwh: float | None = None
+    load_kwh: float | None = None
+    grid_import_kwh: float | None = None
+    grid_export_kwh: float | None = None
+    battery_charge_kwh: float | None = None
+    battery_discharge_kwh: float | None = None
+
+
+class Sigstor20HourlyRowResponse(BaseModel):
+    """One elapsed-hour interval in the configured site timezone."""
+
+    hour_index: int
+    hour_label: str
+    starts_at: datetime
+    ends_at: datetime
+    hourly_kwh: Sigstor20HourlyEnergyResponse
+    cumulative_kwh: Sigstor20HourlyEnergyResponse
+    ending_battery_soc_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_direction: HourlyBatteryDirection = "—"
+    coverage_status: HourlyCoverageStatus
+    coverage_note: str
+    is_partial: bool = False
+    is_future: bool = False
+    sample_count: int = Field(default=0, ge=0)
+    observed_inverter_count: int = Field(default=0, ge=0)
+    start_boundary_max_age_seconds: float | None = Field(default=None, ge=0)
+    end_boundary_max_age_seconds: float | None = Field(default=None, ge=0)
+
+
+class Sigstor20HourlyResponse(BaseModel):
+    """Read-only hourly view computed from stored lifetime-counter samples."""
+
+    timezone: str
+    selected_day: date
+    first_day: date | None = None
+    latest_day: date | None = None
+    latest_observation_at: datetime | None = None
+    has_readings: bool = False
+    sample_count: int = Field(default=0, ge=0)
+    observed_inverter_count: int = Field(default=0, ge=0)
+    boundary_sample_max_age_seconds: int = Field(default=900, ge=1)
+    rows: list[Sigstor20HourlyRowResponse] = Field(default_factory=list)
 
 
 # API response models intentionally describe the existing additive wire

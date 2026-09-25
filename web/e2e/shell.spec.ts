@@ -135,3 +135,69 @@ test("keeps daily net bill columns fixed, centered, baseline-aligned, and non-sc
   expect(mobile.pageOverflow).toBe(false);
   expect(mobile.chartOverflow).toBe(false);
 });
+
+test("Sigstor20 hourly grid statuses stay hourly-based in every mode and fit desktop/mobile widths", async ({ page }) => {
+  const makeRow = (hour_index: number, grid_import_kwh: number | null, grid_export_kwh: number | null, cumulative_import: number, cumulative_export: number) => ({
+    hour_index,
+    hour_label: `${hour_index}:00–${hour_index + 1}:00 (AEST UTC+10:00)`,
+    starts_at: "2026-08-12T12:00:00+10:00",
+    ends_at: "2026-08-12T13:00:00+10:00",
+    hourly_kwh: { solar_kwh: 1, load_kwh: 0.5, grid_import_kwh, grid_export_kwh, battery_charge_kwh: 0.2, battery_discharge_kwh: 0.1 },
+    cumulative_kwh: { solar_kwh: 7, load_kwh: 6, grid_import_kwh: cumulative_import, grid_export_kwh: cumulative_export, battery_charge_kwh: 5, battery_discharge_kwh: 2 },
+    ending_battery_soc_percent: 63,
+    battery_direction: "Charging",
+    coverage_status: "complete",
+    coverage_note: "Fresh samples at each boundary.",
+    is_partial: false,
+    is_future: false,
+    sample_count: 2,
+    observed_inverter_count: 1,
+    start_boundary_max_age_seconds: 1,
+    end_boundary_max_age_seconds: 1,
+  });
+  const payload = {
+    timezone: "Australia/Brisbane",
+    selected_day: "2026-08-12",
+    first_day: "2026-08-01",
+    latest_day: "2026-08-12",
+    latest_observation_at: "2026-08-12T13:00:00+10:00",
+    has_readings: true,
+    sample_count: 6,
+    observed_inverter_count: 1,
+    boundary_sample_max_age_seconds: 900,
+    rows: [makeRow(12, 0.099, 0.1, 9, 0.05), makeRow(13, 0.1, 0.099, 0.05, 9), makeRow(14, null, null, 9, 9)],
+  };
+  await page.route("**/api/sigstor20-hourly**", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(payload) }));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/sigstor20-hourly");
+
+  const table = page.getByRole("table", { name: "Hourly energy, grid import and export status, ending battery SOC and battery activity" });
+  await expect(table).toBeVisible();
+  const assertStatusText = async () => {
+    await expect(table.locator("tbody tr").nth(0).locator(".hourly-import-status-cell")).toHaveText("-");
+    await expect(table.locator("tbody tr").nth(0).locator(".hourly-export-status-cell")).toHaveText("export");
+    await expect(table.locator("tbody tr").nth(1).locator(".hourly-import-status-cell")).toHaveText("import");
+    await expect(table.locator("tbody tr").nth(1).locator(".hourly-export-status-cell")).toHaveText("-");
+    await expect(table.locator("tbody tr").nth(2).locator(".hourly-import-status-cell")).toHaveText("—");
+    await expect(table.locator("tbody tr").nth(2).locator(".hourly-export-status-cell")).toHaveText("—");
+    await expect(table.locator("thead .hourly-status-heading")).toHaveCount(2);
+  };
+  await expect(page.getByRole("radio", { name: "Both" })).toBeChecked();
+  await assertStatusText();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await page.locator(".sigstor20-hourly-table-wrap").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+  await page.getByRole("radio", { name: "Hourly subtotals" }).check();
+  await assertStatusText();
+  await page.getByRole("radio", { name: "Cumulative" }).check();
+  await assertStatusText();
+  await expect(table.locator("tbody tr:first-child td[data-label='Grid import cumulative (kWh)']")).toHaveText("9");
+  expect(await table.locator("tbody tr:first-child .hourly-import-status-cell").textContent()).toBe("-");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".sigstor20-hourly-card")).toHaveCount(3);
+  await expect(page.locator(".sigstor20-hourly-card").first().getByText("Grid Import Status")).toBeVisible();
+  await expect(page.locator(".sigstor20-hourly-card").first().getByText("Grid Export Status")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await page.locator(".sigstor20-hourly-card-grid").first().evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+});

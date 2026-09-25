@@ -158,6 +158,23 @@ th, td { text-align: left; padding: 0.6rem 0.4rem; border-bottom: 1px solid var(
 .chip-ok { border-color: rgba(124, 255, 176, 0.5); color: var(--accent-2); }
 .chip-warn { border-color: rgba(255, 176, 90, 0.5); color: #ffca80; }
 .chip-off { opacity: 0.6; }
+.hourly-controls { display:flex; align-items:end; flex-wrap:wrap; gap:1rem; margin:1rem 0; }
+.hourly-date-field { display:grid; gap:0.35rem; min-width:min(16rem,100%); }
+.hourly-date-field input { min-height:40px; padding:0.5rem; color:var(--text); background:var(--field-bg); border:1px solid var(--border); border-radius:0.5rem; }
+.hourly-mode { display:flex; align-items:center; flex-wrap:wrap; gap:0.35rem 1rem; margin:0; padding:0.6rem 0.8rem; border:1px solid var(--border); border-radius:0.65rem; }
+.hourly-mode legend { padding:0 0.3rem; color:var(--muted); font-size:0.85rem; }
+.hourly-mode label { display:inline-flex; align-items:center; gap:0.4rem; min-height:2rem; }
+.hourly-mode input[type="radio"] { width:auto; accent-color:var(--accent); }
+.hourly-provenance { max-width:72rem; color:var(--muted); font-size:0.9rem; line-height:1.5; }
+.hourly-table-wrap { max-width:100%; overflow-x:auto; }
+.hourly-data-table { min-width:1400px; }
+.hourly-data-table .hourly-cumulative-cell { background:color-mix(in srgb,var(--accent) 12%,var(--field-bg)); font-weight:650; font-variant-numeric:tabular-nums; }
+.hourly-data-table .hourly-subtotal-cell { background:var(--field-bg); font-variant-numeric:tabular-nums; }
+.hourly-data-table .hourly-coverage-cell { min-width:12rem; text-transform:capitalize; }
+.hourly-data-table .hourly-coverage-cell small { display:block; margin-top:0.2rem; color:var(--muted); font-size:0.75rem; white-space:nowrap; }
+.hourly-data-table .hourly-row-state { display:block; margin-top:0.2rem; color:var(--accent); font-size:0.75rem; }
+.hourly-data-table .hourly-partial-row th,.hourly-data-table .hourly-partial-row td { border-bottom-color:var(--accent); }
+.hourly-empty { padding:1rem; border:1px solid var(--border); border-radius:0.65rem; }
 @media (max-width: 1200px) {
   .metrics, .dashboard-grid, .two-col, .inverter-strip { grid-template-columns: 1fr 1fr; }
 }

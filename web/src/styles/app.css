@@ -93,3 +93,52 @@
 .bill-audit-table th:last-child,.bill-audit-table td:last-child { border-left:1px solid var(--border); }
 .bill-audit-total { font-weight:700; }
 .billing-summary .metric { min-height:46px; padding:10px 15px; gap:4px; }
+
+/* Sigstor20 hourly controls and energy provenance. */
+.sigstor20-hourly-controls { display:flex; align-items:end; flex-wrap:wrap; gap:16px; margin-bottom:16px; }
+.sigstor20-hourly-date { width:min(260px,100%); }
+.sigstor20-hourly-mode { display:flex; align-items:center; flex-wrap:wrap; gap:10px 18px; min-height:40px; margin:0; padding:8px 12px; border:1px solid var(--border); border-radius:8px; }
+.sigstor20-hourly-mode legend { padding:0 5px; color:var(--muted-foreground); font-size:12px; font-weight:600; }
+.sigstor20-hourly-mode label { display:inline-flex; align-items:center; gap:7px; min-height:32px; cursor:pointer; }
+.sigstor20-hourly-mode input { accent-color:var(--action); }
+.sigstor20-hourly-provenance { max-width:1100px; color:var(--muted-foreground); font-size:13px; line-height:1.5; }
+.sigstor20-hourly-table-wrap { max-width:100%; overflow:hidden; }
+.sigstor20-hourly-table { width:100%; min-width:0; table-layout:fixed; border-collapse:collapse; }
+.sigstor20-hourly-table th,.sigstor20-hourly-table td { min-width:0; padding:5px 3px; text-align:center; vertical-align:middle; white-space:normal; overflow-wrap:anywhere; line-height:1.15; font-size:10px; }
+.sigstor20-hourly-table col.hourly-hour-col { width:10%; }
+.sigstor20-hourly-table col.hourly-energy-col { width:5.2%; }
+.sigstor20-hourly-table:not(.is-both) col.hourly-energy-col { width:10.5%; }
+.sigstor20-hourly-table col.hourly-status-col { width:6%; }
+.sigstor20-hourly-table col.hourly-soc-col { width:6%; }
+.sigstor20-hourly-table col.hourly-activity-col { width:9%; }
+.sigstor20-hourly-table th.hourly-energy-heading { font-size:10px; }
+.sigstor20-hourly-table thead tr:nth-child(2) th { padding-right:1px; padding-left:1px; font-size:8px; line-height:1.05; }
+.sigstor20-hourly-table .hourly-mode-heading { display:block; margin-top:3px; color:var(--muted-foreground); font-size:8px; font-weight:500; line-height:1.05; }
+.sigstor20-hourly-table .hourly-cumulative-cell,.sigstor20-hourly-table .hourly-subtotal-cell { white-space:nowrap; font-size:9px; }
+.sigstor20-hourly-table .hourly-cumulative-cell { background:color-mix(in srgb,var(--action) 10%,var(--surface)); font-weight:650; font-variant-numeric:tabular-nums; }
+.sigstor20-hourly-table .hourly-subtotal-cell { background:color-mix(in srgb,var(--surface-raised) 65%,var(--surface)); font-variant-numeric:tabular-nums; }
+.sigstor20-hourly-table .hourly-import-status-cell,.sigstor20-hourly-table .hourly-export-status-cell,.hourly-card-value.hourly-import-status-cell,.hourly-card-value.hourly-export-status-cell { font-size:9px; font-weight:700; }
+.sigstor20-hourly-table .hourly-import-status-cell,.hourly-card-value.hourly-import-status-cell { color:var(--warning); }
+.sigstor20-hourly-table .hourly-export-status-cell,.hourly-card-value.hourly-export-status-cell { color:var(--success); }
+.sigstor20-hourly-table .hourly-row-state { display:block; margin-top:3px; color:var(--warning); font-size:10px; font-weight:600; }
+.sigstor20-hourly-table .hourly-partial-row th,.sigstor20-hourly-table .hourly-partial-row td { border-bottom-color:color-mix(in srgb,var(--warning) 40%,var(--border)); }
+.sigstor20-hourly-table .hourly-future-row { color:var(--muted-foreground); }
+.sigstor20-hourly-cards { display:none; }
+
+@media (min-width:1024px) {
+  .sigstor20-hourly-table-wrap { width:calc(100% + 36px); max-width:none; margin-inline:-18px; }
+}
+
+@media (max-width:760px) {
+  .sigstor20-hourly-table-wrap { display:none; }
+  .sigstor20-hourly-cards { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; max-width:100%; }
+  .sigstor20-hourly-card { min-width:0; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+  .sigstor20-hourly-card h3 { margin:0 0 8px; font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
+  .sigstor20-hourly-card .hourly-row-state { display:inline-block; margin:0 0 0 7px; color:var(--warning); font-size:11px; font-weight:600; }
+  .sigstor20-hourly-card .hourly-partial-row,.sigstor20-hourly-card.hourly-partial-row { border-color:color-mix(in srgb,var(--warning) 40%,var(--border)); }
+  .sigstor20-hourly-card.hourly-future-row { color:var(--muted-foreground); }
+  .sigstor20-hourly-card-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .hourly-card-value { display:flex; min-width:0; flex-direction:column; justify-content:space-between; gap:4px; padding:7px; border:1px solid var(--border); border-radius:6px; overflow-wrap:anywhere; font-size:12px; }
+  .hourly-card-label { color:var(--muted-foreground); font-size:10px; line-height:1.2; }
+  .hourly-card-value strong { min-width:0; font-size:12px; font-weight:650; font-variant-numeric:tabular-nums; }
+}

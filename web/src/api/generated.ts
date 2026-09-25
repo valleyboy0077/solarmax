@@ -89,6 +89,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sigstor20-daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sigstor20 Daily Page */
+        get: operations["sigstor20_daily_page_sigstor20_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sigstor20-hourly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sigstor20 Hourly Page */
+        get: operations["sigstor20_hourly_page_sigstor20_hourly_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/state": {
         parameters: {
             query?: never;
@@ -132,6 +166,23 @@ export interface paths {
         };
         /** Api Bill */
         get: operations["api_bill_api_bill_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sigstor20-hourly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Api Sigstor20 Hourly */
+        get: operations["api_sigstor20_hourly_api_sigstor20_hourly_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -891,6 +942,126 @@ export interface components {
              */
             notes: string;
         };
+        /**
+         * Sigstor20HourlyEnergyResponse
+         * @description Hourly energy values in kWh; null means boundary data was unavailable.
+         */
+        Sigstor20HourlyEnergyResponse: {
+            /** Solar Kwh */
+            solar_kwh?: number | null;
+            /** Load Kwh */
+            load_kwh?: number | null;
+            /** Grid Import Kwh */
+            grid_import_kwh?: number | null;
+            /** Grid Export Kwh */
+            grid_export_kwh?: number | null;
+            /** Battery Charge Kwh */
+            battery_charge_kwh?: number | null;
+            /** Battery Discharge Kwh */
+            battery_discharge_kwh?: number | null;
+        };
+        /**
+         * Sigstor20HourlyResponse
+         * @description Read-only hourly view computed from stored lifetime-counter samples.
+         */
+        Sigstor20HourlyResponse: {
+            /** Timezone */
+            timezone: string;
+            /**
+             * Selected Day
+             * Format: date
+             */
+            selected_day: string;
+            /** First Day */
+            first_day?: string | null;
+            /** Latest Day */
+            latest_day?: string | null;
+            /** Latest Observation At */
+            latest_observation_at?: string | null;
+            /**
+             * Has Readings
+             * @default false
+             */
+            has_readings: boolean;
+            /**
+             * Sample Count
+             * @default 0
+             */
+            sample_count: number;
+            /**
+             * Observed Inverter Count
+             * @default 0
+             */
+            observed_inverter_count: number;
+            /**
+             * Boundary Sample Max Age Seconds
+             * @default 900
+             */
+            boundary_sample_max_age_seconds: number;
+            /** Rows */
+            rows?: components["schemas"]["Sigstor20HourlyRowResponse"][];
+        };
+        /**
+         * Sigstor20HourlyRowResponse
+         * @description One elapsed-hour interval in the configured site timezone.
+         */
+        Sigstor20HourlyRowResponse: {
+            /** Hour Index */
+            hour_index: number;
+            /** Hour Label */
+            hour_label: string;
+            /**
+             * Starts At
+             * Format: date-time
+             */
+            starts_at: string;
+            /**
+             * Ends At
+             * Format: date-time
+             */
+            ends_at: string;
+            hourly_kwh: components["schemas"]["Sigstor20HourlyEnergyResponse"];
+            cumulative_kwh: components["schemas"]["Sigstor20HourlyEnergyResponse"];
+            /** Ending Battery Soc Percent */
+            ending_battery_soc_percent?: number | null;
+            /**
+             * Battery Direction
+             * @default —
+             * @enum {string}
+             */
+            battery_direction: "Charging" | "Discharging" | "—";
+            /**
+             * Coverage Status
+             * @enum {string}
+             */
+            coverage_status: "complete" | "partial" | "unavailable" | "future";
+            /** Coverage Note */
+            coverage_note: string;
+            /**
+             * Is Partial
+             * @default false
+             */
+            is_partial: boolean;
+            /**
+             * Is Future
+             * @default false
+             */
+            is_future: boolean;
+            /**
+             * Sample Count
+             * @default 0
+             */
+            sample_count: number;
+            /**
+             * Observed Inverter Count
+             * @default 0
+             */
+            observed_inverter_count: number;
+            /** Start Boundary Max Age Seconds */
+            start_boundary_max_age_seconds?: number | null;
+            /** End Boundary Max Age Seconds */
+            end_boundary_max_age_seconds?: number | null;
+        };
         /** TouPeriodResponse */
         TouPeriodResponse: {
             /** Id */
@@ -1066,6 +1237,58 @@ export interface operations {
             };
         };
     };
+    sigstor20_daily_page_sigstor20_daily_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+        };
+    };
+    sigstor20_hourly_page_sigstor20_hourly_get: {
+        parameters: {
+            query?: {
+                day?: string | null;
+                mode?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     api_state_api_state_get: {
         parameters: {
             query?: never;
@@ -1133,6 +1356,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BillSummaryResponse"];
+                };
+            };
+        };
+    };
+    api_sigstor20_hourly_api_sigstor20_hourly_get: {
+        parameters: {
+            query?: {
+                day?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Sigstor20HourlyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

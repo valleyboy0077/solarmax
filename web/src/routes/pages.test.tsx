@@ -1,11 +1,13 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 import type { components } from "../api/generated";
-import { Chart, BillingRoute, DashboardRoute, EndTimeField, PlansRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
+import { AppShell } from "../components/shell/app-shell";
+import { Chart, BillingRoute, DashboardRoute, EndTimeField, PlansRoute, Sigstor20DailyRoute, Sigstor20HourlyRoute, StartTimeField, TouTableColumnGroup, TouTierInputs } from "./pages";
 import { getFittingChartPointCount } from "./chart-layout";
 
 const apiMocks = vi.hoisted(() => ({ apiDelete: vi.fn(), apiGet: vi.fn(), apiForm: vi.fn(), apiPost: vi.fn() }));
@@ -156,6 +158,46 @@ describe("Billing page contract", () => {
       [["SPAN", "Minimum"], ["BR", ""], ["SPAN", "SOC"]],
       [["SPAN", "Maximum"], ["BR", ""], ["SPAN", "SOC"]],
     ]);
+  });
+});
+
+describe("Sigstor20 daily page contract", () => {
+  it("renders persisted daily site totals without plan or price data", async () => {
+    apiMocks.apiGet.mockResolvedValueOnce({
+      plan: { id: 3, provider_name: "Origin", plan_name: "Mixed Saver", billing_cycle: "monthly", billing_start_day: 1, billing_start_month: 1, daily_supply_charge_cents: 179, export_tier_kwh: 0, export_tier_rate_cents_per_kwh: 0, export_excess_rate_cents_per_kwh: 0, notes: "" },
+      total_cents: 999,
+      rows: [],
+      daily: [],
+      daily_site_totals: [{
+        day: "2026-09-19", plan_id: 3, plan_name: "Mixed Saver", solar_kwh: 12.345, load_kwh: 8.765,
+        grid_import_kwh: 2, grid_export_kwh: 4, grid_import_off_peak_kwh: 1.25, grid_import_peak_kwh: 0.75,
+        grid_export_off_peak_kwh: 3.5, grid_export_peak_kwh: 0.5, battery_charge_kwh: 5.5,
+        battery_discharge_kwh: 4.25, battery_level_min_percent: 20, battery_level_max_percent: 88,
+        battery_level_max_percent_source: "observed", daily_bill_amount_cents: 999,
+      }],
+      today_grid_import_kwh: 2,
+      today_grid_export_kwh: 4,
+      supply_charge_cents: 179,
+      supply_charge_days: 1,
+      billing_window_applied: true,
+    } satisfies components["schemas"]["BillSummaryResponse"]);
+
+    render(<Sigstor20DailyRoute />);
+
+    const table = await screen.findByRole("table", { name: "Sigstor20 daily inverter totals" });
+    expect(apiMocks.apiGet).toHaveBeenCalledWith("/api/bill");
+    expect(Array.from(table.querySelectorAll("thead th")).map((cell) => cell.textContent)).toEqual([
+      "Date", "Solar Gen", "Load Use", "Grid ImportOff-peak", "Grid ImportPeak",
+      "Grid ExportOff-peak", "Grid ExportPeak", "Batt Charge kWh", "Batt Discharge kWh",
+      "MinimumSOC", "MaximumSOC",
+    ]);
+    expect(table).toHaveTextContent("19/09/2026");
+    expect(table).toHaveTextContent("12.35 kWh");
+    expect(table).toHaveTextContent("88.0%");
+    expect(table).not.toHaveTextContent("Mixed Saver");
+    expect(table).not.toHaveTextContent("999");
+    expect(table).not.toHaveTextContent("$");
+    expect(table.querySelectorAll("thead th")).toHaveLength(11);
   });
 });
 
@@ -560,5 +602,110 @@ describe("TOU table layout", () => {
     expect(container.querySelector(".tou-direction-column")).toBeInTheDocument();
     expect(container.querySelector(".tou-label-column")).toBeInTheDocument();
     expect(container.querySelector(".tou-actions-column")).toBeInTheDocument();
+  });
+});
+
+describe("Sigstor20 hourly page", () => {
+  it("defaults to Both, supports date history and separates cumulative from subtotals", async () => {
+    const response: components["schemas"]["Sigstor20HourlyResponse"] = {
+      timezone: "Australia/Brisbane", selected_day: "2026-08-12", first_day: "2026-08-01",
+      latest_day: "2026-08-12", latest_observation_at: "2026-08-12T13:00:00+10:00",
+      has_readings: true, sample_count: 25, observed_inverter_count: 1,
+      boundary_sample_max_age_seconds: 900,
+      rows: [{
+        hour_index: 12, hour_label: "12:00–13:00 AEST UTC+10:00",
+        starts_at: "2026-08-12T12:00:00+10:00", ends_at: "2026-08-12T13:00:00+10:00",
+        hourly_kwh: { solar_kwh: 1.25, load_kwh: 0.5, grid_import_kwh: 0.25, grid_export_kwh: 0.75, battery_charge_kwh: 0.4, battery_discharge_kwh: 0.1 },
+        cumulative_kwh: { solar_kwh: 7.25, load_kwh: 6, grid_import_kwh: 3, grid_export_kwh: 4, battery_charge_kwh: 5, battery_discharge_kwh: 2 },
+        ending_battery_soc_percent: 63, battery_direction: "Charging", coverage_status: "complete",
+        coverage_note: "Fresh samples at each boundary.", is_partial: false, is_future: false,
+        sample_count: 25, observed_inverter_count: 1,
+        start_boundary_max_age_seconds: 2, end_boundary_max_age_seconds: 1,
+      }],
+    };
+    apiMocks.apiGet.mockResolvedValue(response);
+    const user = userEvent.setup();
+    render(<Sigstor20HourlyRoute />);
+
+    const table = await screen.findByRole("table", { name: "Hourly energy, grid import and export status, ending battery SOC and battery activity" });
+    expect(screen.getByLabelText("Local date")).toHaveValue("2026-08-12");
+    expect(screen.getByRole("radio", { name: "Both" })).toBeChecked();
+    expect(table.querySelectorAll(".hourly-cumulative-cell")).toHaveLength(6);
+    expect(table.querySelectorAll(".hourly-subtotal-cell")).toHaveLength(6);
+    expect(table).toHaveTextContent("7.25");
+    expect(table).toHaveTextContent("1.25");
+    expect(table).toHaveTextContent("Charging");
+    expect(table.querySelectorAll(".hourly-status-heading")).toHaveLength(2);
+    expect(table.querySelector(".hourly-import-status-cell")).toHaveTextContent("import");
+    expect(table.querySelector(".hourly-export-status-cell")).toHaveTextContent("export");
+    expect(table).not.toHaveTextContent("Sample coverage");
+    expect(table.textContent).not.toContain("$");
+
+    await user.click(screen.getByRole("radio", { name: "Hourly subtotals" }));
+    expect(table.querySelectorAll(".hourly-cumulative-cell")).toHaveLength(0);
+    expect(table.querySelectorAll(".hourly-subtotal-cell")).toHaveLength(6);
+    expect(table.querySelectorAll(".hourly-status-heading")).toHaveLength(2);
+    await user.click(screen.getByRole("radio", { name: "Cumulative" }));
+    expect(table.querySelectorAll(".hourly-cumulative-cell")).toHaveLength(6);
+    expect(table.querySelectorAll(".hourly-subtotal-cell")).toHaveLength(0);
+    expect(table.querySelectorAll(".hourly-status-heading")).toHaveLength(2);
+    expect(table.querySelector(".hourly-import-status-cell")).toHaveTextContent("import");
+
+    fireEvent.change(screen.getByLabelText("Local date"), { target: { value: "2026-08-11" } });
+    await waitFor(() => expect(apiMocks.apiGet).toHaveBeenLastCalledWith("/api/sigstor20-hourly?day=2026-08-11"));
+    expect(screen.getByLabelText("Local date")).toHaveValue("2026-08-11");
+  });
+
+  it("classifies each grid status from the hourly subtotal threshold in all modes", async () => {
+    const makeRow = (
+      hour_index: number,
+      importKwh: number | null,
+      exportKwh: number | null,
+      cumulativeImport: number,
+      cumulativeExport: number,
+    ): components["schemas"]["Sigstor20HourlyRowResponse"] => ({
+      hour_index, hour_label: `${hour_index}:00–${hour_index + 1}:00`,
+      starts_at: "2026-08-12T12:00:00+10:00", ends_at: "2026-08-12T13:00:00+10:00",
+      hourly_kwh: { solar_kwh: 0, load_kwh: 0, grid_import_kwh: importKwh, grid_export_kwh: exportKwh, battery_charge_kwh: 0, battery_discharge_kwh: 0 },
+      cumulative_kwh: { solar_kwh: 0, load_kwh: 0, grid_import_kwh: cumulativeImport, grid_export_kwh: cumulativeExport, battery_charge_kwh: 0, battery_discharge_kwh: 0 },
+      ending_battery_soc_percent: 50, battery_direction: "—", coverage_status: "complete", coverage_note: "Test row.",
+      is_partial: false, is_future: false, sample_count: 2, observed_inverter_count: 1,
+      start_boundary_max_age_seconds: 1, end_boundary_max_age_seconds: 1,
+    });
+    const response: components["schemas"]["Sigstor20HourlyResponse"] = {
+      timezone: "Australia/Brisbane", selected_day: "2026-08-12", first_day: "2026-08-01", latest_day: "2026-08-12",
+      latest_observation_at: "2026-08-12T13:00:00+10:00", has_readings: true, sample_count: 6, observed_inverter_count: 1,
+      boundary_sample_max_age_seconds: 900,
+      rows: [makeRow(12, 0.099, 0.1, 9, 0.05), makeRow(13, 0.1, 0.099, 0.05, 9), makeRow(14, null, null, 9, 9)],
+    };
+    apiMocks.apiGet.mockResolvedValue(response);
+    const user = userEvent.setup();
+    render(<Sigstor20HourlyRoute />);
+    const table = await screen.findByRole("table", { name: "Hourly energy, grid import and export status, ending battery SOC and battery activity" });
+
+    const assertStatuses = () => {
+      const rows = [...table.querySelectorAll("tbody tr")];
+      expect(rows.map((row) => row.querySelector(".hourly-import-status-cell")?.textContent?.trim())).toEqual(["-", "import", "—"]);
+      expect(rows.map((row) => row.querySelector(".hourly-export-status-cell")?.textContent?.trim())).toEqual(["export", "-", "—"]);
+      expect(table.querySelectorAll(".hourly-status-heading")).toHaveLength(2);
+    };
+    assertStatuses();
+    expect(table.querySelector("tbody tr:first-child .hourly-cumulative-cell[data-label='Grid import cumulative (kWh)']")).toHaveTextContent("9");
+    expect(table.querySelector("tbody tr:first-child .hourly-import-status-cell")).toHaveTextContent("-");
+
+    await user.click(screen.getByRole("radio", { name: "Hourly subtotals" }));
+    assertStatuses();
+    await user.click(screen.getByRole("radio", { name: "Cumulative" }));
+    assertStatuses();
+    expect(table).not.toHaveTextContent("Sample coverage");
+  });
+
+  it("places the hourly item immediately after the daily item in the LHS navigation", () => {
+    apiMocks.apiGet.mockRejectedValue(new Error("No dashboard fixture needed"));
+    render(<MemoryRouter><AppShell /></MemoryRouter>);
+    const links = Array.from(screen.getByRole("navigation", { name: "Primary navigation" }).querySelectorAll("a"), (link) => link.textContent);
+    const dailyIndex = links.indexOf("Sigstor20 daily");
+    expect(dailyIndex).toBeGreaterThanOrEqual(0);
+    expect(links[dailyIndex + 1]).toBe("Sigstor20 hourly");
   });
 });

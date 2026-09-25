@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Sigstor20 daily{% endblock %}
+{% block content %}
+<section class="panel form-panel">
+  <div class="panel-head"><div><div class="eyebrow">Sigstor20 daily</div><h2>Daily inverter data</h2></div></div>
+  <p>Persisted local-day energy and battery totals from the same site data used by Billing.</p>
+  {% if daily_site_totals %}
+  <table>
+    <thead><tr><th>Date</th><th>Solar generated</th><th>Load use</th><th>Grid import off-peak</th><th>Grid import peak</th><th>Grid export off-peak</th><th>Grid export peak</th><th>Battery charge</th><th>Battery discharge</th><th>Minimum SOC</th><th>Maximum SOC</th></tr></thead>
+    <tbody>
+      {% for row in daily_site_totals %}
+      <tr>
+        <td>{{ format_au_date(row.day) }}</td>
+        <td>{{ '%.3f'|format(row.solar_kwh) }} kWh</td>
+        <td>{{ '%.3f'|format(row.load_kwh) }} kWh</td>
+        <td>{% if row.grid_import_off_peak_kwh is not none %}{{ '%.3f'|format(row.grid_import_off_peak_kwh) }} kWh{% else %}—{% endif %}</td>
+        <td>{% if row.grid_import_peak_kwh is not none %}{{ '%.3f'|format(row.grid_import_peak_kwh) }} kWh{% else %}—{% endif %}</td>
+        <td>{% if row.grid_export_off_peak_kwh is not none %}{{ '%.3f'|format(row.grid_export_off_peak_kwh) }} kWh{% else %}—{% endif %}</td>
+        <td>{% if row.grid_export_peak_kwh is not none %}{{ '%.3f'|format(row.grid_export_peak_kwh) }} kWh{% else %}—{% endif %}</td>
+        <td>{{ '%.3f'|format(row.battery_charge_kwh) }} kWh</td>
+        <td>{{ '%.3f'|format(row.battery_discharge_kwh) }} kWh</td>
+        <td>{% if row.battery_level_min_percent is not none %}{{ '%.1f'|format(row.battery_level_min_percent) }}%{% else %}—{% endif %}</td>
+        <td>{% if row.battery_level_max_percent is not none %}{{ '%.1f'|format(row.battery_level_max_percent) }}%{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No daily site totals yet. Poll the inverters to record authoritative local-day meter totals.</p>
+  {% endif %}
+</section>
+{% endblock %}

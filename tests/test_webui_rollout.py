@@ -27,7 +27,7 @@ def test_react_rollout_is_opt_in_and_only_handles_existing_page_routes(tmp_path,
 
     monkeypatch.setattr(main, "config", RuntimeConfig(webui_mode="react"))
     with TestClient(main.app) as client:
-        for path in ("/", "/inverters", "/plans", "/billing", "/settings"):
+        for path in ("/", "/inverters", "/plans", "/billing", "/sigstor20-daily", "/sigstor20-hourly", "/settings"):
             response = client.get(path)
             assert response.status_code == 200
             assert "React shell" in response.text

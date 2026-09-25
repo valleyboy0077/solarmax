@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Sigstor20 hourly{% endblock %}
+{% block content %}
+<section class="panel form-panel sigstor20-hourly">
+  <div class="panel-head"><div><div class="eyebrow">Sigstor20 hourly</div><h2>Hourly inverter data</h2></div></div>
+  <p>Hourly kWh values come from persisted lifetime-counter snapshots and use the configured site timezone.</p>
+  <form class="hourly-controls" method="get" action="/sigstor20-hourly">
+    <label class="hourly-date-field" for="hourly-day"><span>Local date</span>
+      <input id="hourly-day" type="date" name="day" value="{{ hourly_data.selected_day.isoformat() }}"{% if hourly_data.first_day %} min="{{ hourly_data.first_day.isoformat() }}"{% endif %}{% if hourly_data.latest_day %} max="{{ hourly_data.latest_day.isoformat() }}"{% endif %}>
+    </label>
+    <fieldset class="hourly-mode" role="radiogroup" aria-label="Energy display mode">
+      <legend>Energy display mode</legend>
+      <label><input type="radio" name="mode" value="cumulative"{% if mode == 'cumulative' %} checked{% endif %}> Cumulative</label>
+      <label><input type="radio" name="mode" value="hourly"{% if mode == 'hourly' %} checked{% endif %}> Hourly subtotals</label>
+      <label><input type="radio" name="mode" value="both"{% if mode == 'both' %} checked{% endif %}> Both</label>
+    </fieldset>
+    <button type="submit">Show date</button>
+  </form>
+  <p class="hourly-provenance">Timezone: {{ hourly_data.timezone }}. Latest stored local date: {% if hourly_data.latest_day %}{{ format_au_date(hourly_data.latest_day) }}{% else %}none{% endif %}. Values require fresh boundary snapshots no more than 15 minutes old. Samples from inverters with stored readings are included regardless of their current enabled or reachable state. Battery SOC and direction are withheld when more than one inverter contributed, because a site-level SOC cannot be inferred safely.</p>
+  {% if hourly_data.has_readings %}
+  <p class="hourly-provenance">{{ hourly_data.sample_count }} stored samples from {{ hourly_data.observed_inverter_count }} inverter{{ '' if hourly_data.observed_inverter_count == 1 else 's' }} with readings on this local date. Hourly subtotals compare the last lifetime-counter sample at or before each boundary. The first visible cumulative value is available only when each preceding hour can be reconciled from local midnight.</p>
+  <div class="table-wrap hourly-table-wrap" tabindex="0" aria-label="Sigstor20 hourly energy, SOC and coverage">
+    <table class="hourly-data-table">
+      <caption class="sr-only">Sigstor20 hourly energy, ending battery SOC, battery direction and sample coverage for {{ hourly_data.selected_day.isoformat() }}</caption>
+      <thead>
+        <tr>
+          <th scope="col"{% if mode == 'both' %} rowspan="2"{% endif %}>Local hour</th>
+          {% for key, label in energy_columns %}
+            {% if mode == 'both' %}<th scope="colgroup" colspan="2">{{ label }}</th>
+            {% else %}<th scope="col">{{ label }} — {{ 'Cumulative' if mode == 'cumulative' else 'Hourly subtotal' }}</th>{% endif %}
+          {% endfor %}
+          <th scope="col"{% if mode == 'both' %} rowspan="2"{% endif %}>Ending battery SOC</th>
+          <th scope="col"{% if mode == 'both' %} rowspan="2"{% endif %}>Battery activity</th>
+          <th scope="col"{% if mode == 'both' %} rowspan="2"{% endif %}>Sample coverage</th>
+        </tr>
+        {% if mode == 'both' %}<tr>{% for key, label in energy_columns %}<th scope="col">Cumulative</th><th scope="col">Hourly subtotal</th>{% endfor %}</tr>{% endif %}
+      </thead>
+      <tbody>
+        {% for row in hourly_data.rows %}
+        <tr{% if row.is_partial %} class="hourly-partial-row"{% elif row.is_future %} class="hourly-future-row"{% endif %}>
+          <th scope="row" title="{{ row.starts_at.isoformat() }} through {{ row.ends_at.isoformat() }}">{{ row.hour_label }}{% if row.is_partial %}<span class="hourly-row-state">Partial</span>{% elif row.is_future %}<span class="hourly-row-state">Future</span>{% endif %}</th>
+          {% for key, label in energy_columns %}
+            {% if mode in ('cumulative', 'both') %}<td class="hourly-cumulative-cell">{% if row.cumulative_kwh[key] is not none %}{{ '%.3f'|format(row.cumulative_kwh[key]) }} kWh{% else %}—{% endif %}</td>{% endif %}
+            {% if mode in ('hourly', 'both') %}<td class="hourly-subtotal-cell">{% if row.hourly_kwh[key] is not none %}{{ '%.3f'|format(row.hourly_kwh[key]) }} kWh{% else %}—{% endif %}</td>{% endif %}
+          {% endfor %}
+          <td>{% if row.ending_battery_soc_percent is not none %}{{ '%.1f'|format(row.ending_battery_soc_percent) }}%{% else %}—{% endif %}</td>
+          <td>{{ row.battery_direction }}</td>
+          <td class="hourly-coverage-cell" title="{{ row.coverage_note }}">{{ row.coverage_status }}{% if row.start_boundary_max_age_seconds is not none or row.end_boundary_max_age_seconds is not none %}<small>{% if row.start_boundary_max_age_seconds is not none %}start {{ '%.0f'|format(row.start_boundary_max_age_seconds) }}s{% endif %}{% if row.end_boundary_max_age_seconds is not none %} · end {{ '%.0f'|format(row.end_boundary_max_age_seconds) }}s{% endif %}</small>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="hourly-empty" role="status">No stored telemetry for this local date. Values are left unavailable until lifetime-counter samples are recorded.</p>
+  {% endif %}
+</section>
+{% endblock %}

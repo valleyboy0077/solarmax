@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Check, CircleAlert, Clock, CloudSun, LoaderCircle, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
 import { apiDelete, apiForm, apiGet, apiPost } from "../api/client";
 import type { components } from "../api/generated";
@@ -282,9 +282,136 @@ export function PlansRoute() {
 function CloseDayButton({ onClosed }: { onClosed: () => Promise<void> }) { const [pending, setPending] = useState(false); const [message, setMessage] = useState<string | null>(null); const close = async () => { if (!window.confirm("Close and finalize the current local day?")) return; setPending(true); setMessage(null); try { const result = await apiPost<components["schemas"]["CloseDayResponse"]>("/api/close-day"); await onClosed(); setMessage(`Day ${result.day} finalized.`); } catch (cause) { setMessage((cause as Error).message); } finally { setPending(false); } }; return <span className="mutation"><Button type="button" onClick={() => void close()} disabled={pending}>{pending ? "Closing…" : "Close day"}</Button><Notice message={message} error={message !== null && !message.startsWith("Day ")} /></span>; }
 
 function DailyTouEnergy({ value }: { value: number | null | undefined }) { return value == null ? <td aria-label="Not available">—</td> : <td>{formatEnergy(value)}</td>; }
-function DailySiteTotalsTable({ rows }: { rows: components["schemas"]["DailySiteTotal"][] }) { if (!rows.length) return <EmptyState title="No daily site totals yet">Poll the inverters to record authoritative local-day meter totals.</EmptyState>; return <div className="table-wrap" tabIndex={0} aria-label="Daily site totals and billing"><table><thead><tr><th>Date</th><th>Solar Gen</th><th>Load Use</th><th><span>Grid Import</span><br /><span>Off-peak</span></th><th><span>Grid Import</span><br /><span>Peak</span></th><th><span>Grid Export</span><br /><span>Off-peak</span></th><th><span>Grid Export</span><br /><span>Peak</span></th><th>Batt Charge kWh</th><th>Batt Discharge kWh</th><th><span>Minimum</span><br /><span>SOC</span></th><th><span>Maximum</span><br /><span>SOC</span></th><th>Power Plan</th><th>Daily Amount</th></tr></thead><tbody>{rows.map((row) => <tr key={row.day}><td>{formatAuDate(row.day)}</td><td>{formatEnergy(row.solar_kwh)}</td><td>{formatEnergy(row.load_kwh)}</td><DailyTouEnergy value={row.grid_import_off_peak_kwh} /><DailyTouEnergy value={row.grid_import_peak_kwh} /><DailyTouEnergy value={row.grid_export_off_peak_kwh} /><DailyTouEnergy value={row.grid_export_peak_kwh} /><td>{formatEnergy(row.battery_charge_kwh)}</td><td>{formatEnergy(row.battery_discharge_kwh)}</td><DailySocValue value={row.battery_level_min_percent} /><DailySocValue value={row.battery_level_max_percent} source={row.battery_level_max_percent_source} /><td>{row.plan_name ?? "—"}</td><td>{formatMoney(row.daily_bill_amount_cents)}</td></tr>)}</tbody></table></div>; }
+function DailySiteTotalsTable({ rows, includeBilling = true }: { rows: components["schemas"]["DailySiteTotal"][]; includeBilling?: boolean }) { if (!rows.length) return <EmptyState title="No daily site totals yet">Poll the inverters to record authoritative local-day meter totals.</EmptyState>; return <div className="table-wrap" tabIndex={0} aria-label={includeBilling ? "Daily site totals and billing" : "Sigstor20 daily inverter totals"}><table><caption className="sr-only">{includeBilling ? "Daily site totals and billing" : "Sigstor20 daily inverter totals"}</caption><thead><tr><th>Date</th><th>Solar Gen</th><th>Load Use</th><th><span>Grid Import</span><br /><span>Off-peak</span></th><th><span>Grid Import</span><br /><span>Peak</span></th><th><span>Grid Export</span><br /><span>Off-peak</span></th><th><span>Grid Export</span><br /><span>Peak</span></th><th>Batt Charge kWh</th><th>Batt Discharge kWh</th><th><span>Minimum</span><br /><span>SOC</span></th><th><span>Maximum</span><br /><span>SOC</span></th>{includeBilling && <><th>Power Plan</th><th>Daily Amount</th></>}</tr></thead><tbody>{rows.map((row) => <tr key={row.day}><td>{formatAuDate(row.day)}</td><td>{formatEnergy(row.solar_kwh)}</td><td>{formatEnergy(row.load_kwh)}</td><DailyTouEnergy value={row.grid_import_off_peak_kwh} /><DailyTouEnergy value={row.grid_import_peak_kwh} /><DailyTouEnergy value={row.grid_export_off_peak_kwh} /><DailyTouEnergy value={row.grid_export_peak_kwh} /><td>{formatEnergy(row.battery_charge_kwh)}</td><td>{formatEnergy(row.battery_discharge_kwh)}</td><DailySocValue value={row.battery_level_min_percent} /><DailySocValue value={row.battery_level_max_percent} source={row.battery_level_max_percent_source} />{includeBilling && <><td>{row.plan_name ?? "—"}</td><td>{formatMoney(row.daily_bill_amount_cents)}</td></>}</tr>)}</tbody></table></div>; }
 function DailySocValue({ value, source }: { value: number | null | undefined; source?: components["schemas"]["DailySiteTotal"]["battery_level_max_percent_source"] }) { if (value == null) return <td aria-label="Not available">—</td>; const derived = source === "derived_from_grid_export_off_peak"; return <td title={derived ? "Derived from positive Grid Export Off-peak; not directly observed." : undefined}>{formatBatteryLevel(value)}{derived && <span className="sr-only"> (derived from positive Grid Export Off-peak)</span>}</td>; }
 
 export function BillingRoute() { const bill = useResource<Bill>("/api/bill"); const [direction, setDirection] = useState("all"); if (bill.loading && !bill.data) return <LoadingState label="Loading billing audit" />; if (bill.error && !bill.data) return <ErrorState>Unable to load billing details. <button className="link-button" onClick={() => void bill.reload()}>Try again</button></ErrorState>; const data = bill.data!; const filtered = { ...data, rows: (data.rows ?? []).filter((row) => direction === "all" || row.direction === direction) }; return <Page title="Billing" description="Backend-calculated current bill for the active billing cycle and meter-authoritative daily site totals." actions={<><Button onClick={() => void bill.reload()}><RefreshCw size={16} /> Refresh</Button><CloseDayButton onClosed={bill.reload} /></>}><div className="billing-summary"><Metric label="Active plan" value={data.plan?.plan_name ?? "None selected"} /><Metric label="Current bill" value={formatMoney(data.total_cents)} /><Metric label="Imported today" value={formatEnergy(data.today_grid_import_kwh)} /><Metric label="Exported today" value={formatEnergy(data.today_grid_export_kwh)} /></div>{!data.plan && <section className="alert-banner"><CircleAlert size={18} />No active plan: no pricing can be calculated until a plan is selected in Settings.</section>}<section className="section"><div className="section-heading"><div><h2>Daily site totals and billing</h2><p>Local-day totals from persisted daily counters; bill amounts from the same day’s server-calculated bill rows.</p></div></div><DailySiteTotalsTable rows={data.daily_site_totals ?? []} /></section><section className="section"><div className="section-heading"><div><h2>Bill audit</h2><p>{data.plan ? `${data.plan.provider_name} — ${data.plan.plan_name}` : "No active plan"}</p><label className="filter"><span>Direction</span><select value={direction} onChange={(e) => setDirection(e.target.value)}><option value="all">All</option><option value="import">Import</option><option value="export">Export</option><option value="fixed">Fixed</option></select></label></div></div><BillTable bill={filtered} /></section></Page>; }
+export function Sigstor20DailyRoute() { const bill = useResource<Bill>("/api/bill"); if (bill.loading && !bill.data) return <LoadingState label="Loading Sigstor20 daily data" />; if (bill.error && !bill.data) return <ErrorState>Unable to load Sigstor20 daily data. <button className="link-button" onClick={() => void bill.reload()}>Try again</button></ErrorState>; return <Page title="Sigstor20 daily" description="Daily inverter energy and battery data from the persisted site totals." actions={<Button onClick={() => void bill.reload()}><RefreshCw size={16} /> Refresh</Button>}><section className="section"><div className="section-heading"><div><h2>Daily inverter data</h2><p>Local-day totals for solar, load, grid import/export, battery activity and SOC. Price data is intentionally excluded.</p></div></div><DailySiteTotalsTable rows={bill.data!.daily_site_totals ?? []} includeBilling={false} /></section></Page>; }
+
+type Sigstor20Hourly = components["schemas"]["Sigstor20HourlyResponse"];
+type Sigstor20HourlyRow = components["schemas"]["Sigstor20HourlyRowResponse"];
+type Sigstor20HourlyEnergy = components["schemas"]["Sigstor20HourlyEnergyResponse"];
+type Sigstor20HourlyMode = "cumulative" | "hourly" | "both";
+const sigstor20HourlyFields = [
+  ["solar_kwh", "Solar"], ["load_kwh", "Load"], ["grid_import_kwh", "Grid import"],
+  ["grid_export_kwh", "Grid export"], ["battery_charge_kwh", "Battery charge"],
+  ["battery_discharge_kwh", "Battery discharge"],
+] as const satisfies readonly [keyof Sigstor20HourlyEnergy, string][];
+
+type HourlyDisplayCell = { key: string; label: string; value: string; kind: "cumulative" | "subtotal" | "import-status" | "export-status" | "battery" };
+
+function gridEnergyStatus(value: number | null | undefined, direction: "import" | "export"): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return value >= 0.1 ? direction : "-";
+}
+
+function formatHourlyEnergyValue(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("en-AU", { maximumFractionDigits: 2 }).format(value);
+}
+
+function hourlyDisplayCells(row: Sigstor20HourlyRow, mode: Sigstor20HourlyMode): HourlyDisplayCell[] {
+  const cells: HourlyDisplayCell[] = [];
+  for (const [key, label] of sigstor20HourlyFields) {
+    if (mode !== "hourly") {
+      const value = row.cumulative_kwh[key];
+      cells.push({ key: `${key}-cumulative`, label: `${label} cumulative (kWh)`, value: formatHourlyEnergyValue(value), kind: "cumulative" });
+    }
+    if (mode !== "cumulative") {
+      const value = row.hourly_kwh[key];
+      cells.push({ key: `${key}-subtotal`, label: `${label} hourly subtotal (kWh)`, value: formatHourlyEnergyValue(value), kind: "subtotal" });
+    }
+    if (key === "grid_import_kwh") {
+      cells.push({ key: "grid-import-status", label: "Grid Import Status", value: gridEnergyStatus(row.hourly_kwh.grid_import_kwh, "import"), kind: "import-status" });
+    } else if (key === "grid_export_kwh") {
+      cells.push({ key: "grid-export-status", label: "Grid Export Status", value: gridEnergyStatus(row.hourly_kwh.grid_export_kwh, "export"), kind: "export-status" });
+    }
+  }
+  cells.push({ key: "battery-soc", label: "Ending battery SOC", value: row.ending_battery_soc_percent == null ? "—" : `${row.ending_battery_soc_percent.toFixed(1)}%`, kind: "battery" });
+  cells.push({ key: "battery-activity", label: "Battery activity", value: row.battery_direction, kind: "battery" });
+  return cells;
+}
+
+function HourlyHeaderLabel({ label }: { label: string }) {
+  const [first, ...rest] = label.split(" ");
+  return <>{first}{rest.length > 0 && <><br />{rest.join(" ")}</>}</>;
+}
+
+function Sigstor20HourlyTable({ rows, mode }: { rows: Sigstor20HourlyRow[]; mode: Sigstor20HourlyMode }) {
+  const both = mode === "both";
+  const statusHeader = (direction: "import" | "export") => <span>{direction === "import" ? <>Grid<br />Import<br />Status</> : <>Grid<br />Export<br />Status</>}</span>;
+  const statusCell = (direction: "import" | "export") => <th scope="col" rowSpan={both ? 2 : undefined} className="hourly-status-heading">{statusHeader(direction)}</th>;
+  const tableCell = (cell: HourlyDisplayCell) => <td key={cell.key} data-label={cell.label} className={`hourly-${cell.kind}-cell`}>{cell.value === "—" ? <span aria-label="Not available">—</span> : cell.value}</td>;
+
+  return <>
+    <div className="table-wrap sigstor20-hourly-table-wrap" tabIndex={0} aria-label="Sigstor20 hourly energy, battery SOC and activity">
+      <table className={`sigstor20-hourly-table${both ? " is-both" : ""}`}>
+        <caption className="sr-only">Hourly energy, grid import and export status, ending battery SOC and battery activity</caption>
+        <colgroup>
+          <col className="hourly-hour-col" />
+          {sigstor20HourlyFields.map(([key]) => <Fragment key={key}>{both && <><col className="hourly-energy-col" /><col className="hourly-energy-col" /></>}{!both && <col className="hourly-energy-col" />}{key === "grid_import_kwh" && <col className="hourly-status-col" />}{key === "grid_export_kwh" && <col className="hourly-status-col" />}</Fragment>)}
+          <col className="hourly-soc-col" /><col className="hourly-activity-col" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col" rowSpan={both ? 2 : undefined}>Local<br />hour</th>
+            {sigstor20HourlyFields.map(([key, label]) => <Fragment key={key}>
+              {both ? <th scope="colgroup" colSpan={2} className="hourly-energy-heading"><HourlyHeaderLabel label={label} /></th> : <th scope="col" className="hourly-energy-heading"><HourlyHeaderLabel label={label} /><span className="hourly-mode-heading">{mode === "cumulative" ? <>Cumulative<br />(kWh)</> : <>Hourly<br />subtotal<br />(kWh)</>}</span></th>}
+              {key === "grid_import_kwh" && statusCell("import")}
+              {key === "grid_export_kwh" && statusCell("export")}
+            </Fragment>)}
+            <th scope="col" rowSpan={both ? 2 : undefined}>Ending<br />battery<br />SOC</th>
+            <th scope="col" rowSpan={both ? 2 : undefined}>Battery<br />activity</th>
+          </tr>
+          {both && <tr>{sigstor20HourlyFields.map(([key]) => <Fragment key={key}><th scope="col">Cumulative<br />(kWh)</th><th scope="col">Hourly<br />subtotal<br />(kWh)</th></Fragment>)}</tr>}
+        </thead>
+        <tbody>{rows.map((row) => <tr key={row.hour_index} className={row.is_partial ? "hourly-partial-row" : row.is_future ? "hourly-future-row" : undefined}>
+          <th scope="row" title={`${row.coverage_note} (${row.starts_at} through ${row.ends_at})`}><span>{row.hour_label}</span>{row.is_partial && <span className="hourly-row-state">Partial</span>}{row.is_future && <span className="hourly-row-state">Future</span>}</th>
+          {hourlyDisplayCells(row, mode).map(tableCell)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+    <div className="sigstor20-hourly-cards" aria-label="Sigstor20 hourly energy and battery details">
+      {rows.map((row) => <article key={row.hour_index} className={`sigstor20-hourly-card${row.is_partial ? " hourly-partial-row" : row.is_future ? " hourly-future-row" : ""}`}>
+        <h3 title={`${row.coverage_note} (${row.starts_at} through ${row.ends_at})`}>{row.hour_label}{row.is_partial && <span className="hourly-row-state">Partial</span>}{row.is_future && <span className="hourly-row-state">Future</span>}</h3>
+        <div className="sigstor20-hourly-card-grid">{hourlyDisplayCells(row, mode).map((cell) => <div key={cell.key} data-label={cell.label} className={`hourly-card-value hourly-${cell.kind}-cell`}><span className="hourly-card-label">{cell.label}</span><strong>{cell.value}</strong></div>)}</div>
+      </article>)}
+    </div>
+  </>;
+}
+
+export function Sigstor20HourlyRoute() {
+  const query = new URLSearchParams(window.location.search);
+  const initialDay = query.get("day");
+  const initialMode = query.get("mode");
+  const [requestedDay, setRequestedDay] = useState<string | null>(initialDay);
+  const [mode, setMode] = useState<Sigstor20HourlyMode>(initialMode === "cumulative" || initialMode === "hourly" || initialMode === "both" ? initialMode : "both");
+  const [data, setData] = useState<Sigstor20Hourly | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [loading, setLoading] = useState(true);
+  const endpoint = requestedDay ? `/api/sigstor20-hourly?day=${encodeURIComponent(requestedDay)}` : "/api/sigstor20-hourly";
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try { setData(await apiGet<Sigstor20Hourly>(endpoint)); setError(null); }
+    catch (cause) { setError(cause as Error); }
+    finally { setLoading(false); }
+  }, [endpoint]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  if (loading && !data) return <LoadingState label="Loading Sigstor20 hourly data" />;
+  if (error && !data) return <ErrorState>Unable to load Sigstor20 hourly data. <button className="link-button" onClick={() => void reload()}>Try again</button></ErrorState>;
+  const hourly = data!;
+  const selectedDay = requestedDay ?? hourly.selected_day;
+  return <Page title="Sigstor20 hourly" description="Hour-by-hour energy and battery data derived from persisted lifetime-counter snapshots." actions={<Button onClick={() => void reload()} disabled={loading}><RefreshCw size={16} /> {loading ? "Refreshing…" : "Refresh"}</Button>}>
+    <section className="section sigstor20-hourly-section">
+      <div className="sigstor20-hourly-controls">
+        <label className="field sigstor20-hourly-date" htmlFor="sigstor20-hourly-day"><span>Local date</span><input id="sigstor20-hourly-day" type="date" value={selectedDay} min={hourly.first_day ?? undefined} max={hourly.latest_day ?? undefined} onChange={(event) => setRequestedDay(event.target.value)} /></label>
+        <fieldset className="sigstor20-hourly-mode" role="radiogroup" aria-label="Energy display mode"><legend>Energy display mode</legend>{(["cumulative", "hourly", "both"] as const).map((value) => <label key={value}><input type="radio" name="sigstor20-hourly-mode" value={value} checked={mode === value} onChange={() => setMode(value)} /><span>{value === "hourly" ? "Hourly subtotals" : value[0].toUpperCase() + value.slice(1)}</span></label>)}</fieldset>
+      </div>
+      <div className="section-heading"><div><h2>Hourly energy</h2><p>{hourly.sample_count} stored sample{hourly.sample_count === 1 ? "" : "s"} from {hourly.observed_inverter_count} inverter{hourly.observed_inverter_count === 1 ? "" : "s"} with readings on this local date. Latest date with stored readings: {hourly.latest_day ?? "none"} ({hourly.timezone}).</p></div></div>
+      <p className="sigstor20-hourly-provenance">Hourly values compare the last lifetime-counter snapshot at or before each boundary; boundary samples must be no more than {Math.round(hourly.boundary_sample_max_age_seconds / 60)} minutes old. Cumulative values start at local midnight and remain unavailable after a missing or reset interval. Samples from historical inverters are used regardless of their current enabled or reachable state. SOC and battery direction are shown only when exactly one inverter has stored readings for the date.</p>
+      {hourly.has_readings ? <Sigstor20HourlyTable rows={hourly.rows ?? []} mode={mode} /> : <EmptyState title="No stored telemetry for this date">No lifetime-counter readings are stored for this local date. Missing telemetry is shown as unavailable, never as zero.</EmptyState>}
+    </section>
+  </Page>;
+}
 
 export function SettingsRoute() { const state = useResource<State>("/api/state"); const [pending, setPending] = useState(false); const [message, setMessage] = useState<string | null>(null); if (state.loading && !state.data) return <LoadingState label="Loading settings" />; if (state.error && !state.data) return <ErrorState>Unable to load settings.</ErrorState>; const data = state.data!; const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const f = new FormData(event.currentTarget); const theme = String(f.get("theme")); document.documentElement.dataset.theme = theme; setPending(true); try { await apiForm("/api/settings", { theme, mode: String(f.get("mode")), site_name: String(f.get("site_name")), site_lat: Number(f.get("site_lat")), site_lon: Number(f.get("site_lon")), site_timezone: String(f.get("site_timezone")), poll_interval_seconds: Number(f.get("poll_interval_seconds")), active_plan_id: String(f.get("active_plan_id")) }); await state.reload(); setMessage("Settings saved."); } catch (cause) { setMessage((cause as Error).message); } finally { setPending(false); } }; return <Page title="Settings" description="Site identity, refresh cadence, active tariff plan and interface theme."><form className="form-card settings-form" onSubmit={(e) => void submit(e)}><div className="form-grid"><label className="field"><span>Theme</span><select name="theme" defaultValue={data.settings.theme}><option value="classic-light">Classic light</option><option value="classic-dark">Classic dark</option><option value="deep-ocean">Deep ocean</option><option value="ember-core">Ember core</option></select></label><label className="field"><span>Mode</span><select name="mode" defaultValue={data.settings.mode}><option value="manual">Manual</option><option value="ai">AI</option></select></label><Field label="Site name" name="site_name" defaultValue={data.settings.site_name} required /><Field label="Latitude" name="site_lat" type="number" step="0.000001" defaultValue={data.settings.site_lat} required /><Field label="Longitude" name="site_lon" type="number" step="0.000001" defaultValue={data.settings.site_lon} required /><Field label="IANA timezone" name="site_timezone" defaultValue={data.settings.site_timezone} required /><Field label="Poll interval (seconds)" name="poll_interval_seconds" type="number" min="5" max="3600" defaultValue={data.settings.poll_interval_seconds} required /><label className="field"><span>Active plan</span><select title={data.power_plans.find((plan) => plan.id === data.settings.active_plan_id) ? `${data.power_plans.find((plan) => plan.id === data.settings.active_plan_id)?.provider_name} — ${data.power_plans.find((plan) => plan.id === data.settings.active_plan_id)?.plan_name}` : "None"} name="active_plan_id" defaultValue={data.settings.active_plan_id ?? ""}><option value="">None</option>{data.power_plans.map((plan) => <option value={plan.id} key={plan.id}>{plan.provider_name} — {plan.plan_name}</option>)}</select></label></div><Button type="submit" variant="primary" disabled={pending}>{pending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save settings</Button><Notice message={message} error={message !== "Settings saved."} /></form></Page>; }

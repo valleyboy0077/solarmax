@@ -24,6 +24,12 @@ from .db import (
 from .inverters.base import InverterReading
 from .inverters.registry import get_adapter
 from .models import AppSettings, InverterProfile, PowerPlan, TouPeriod
+from .sigstor20_hourly import (
+    BOUNDARY_SAMPLE_MAX_AGE,
+    build_sigstor20_hourly_response,
+    day_bounds_utc,
+    parse_capture,
+)
 from .weather import WeatherSummary, fetch_open_meteo, recommend_battery_policy
 
 SUPPORTED_THEMES = {"classic-light", "classic-dark", "deep-ocean", "ember-core"}
@@ -798,6 +804,96 @@ class SolarmaxService:
                 "Wiped %s raw and %s rollup telemetry rows for %s and %s because no daily counter exists for %s",
                 len(raw_ids), len(rollup_ids), today - timedelta(days=1), today, yesterday,
             )
+
+    def sigstor20_hourly_data(
+        self, requested_day: date | None = None, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Read hourly inverter data from stored lifetime-counter snapshots only.
+
+        The connection is opened read-only. The selected local day is bounded
+        to one date plus the maximum allowed pre-midnight boundary age; no
+        polling, rollup, daily-register, or billing path is used.
+        """
+
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        connection = sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            settings = {
+                row["key"]: row["value"]
+                for row in connection.execute(
+                    "SELECT key, value FROM app_settings WHERE key IN ('site_timezone')"
+                )
+            }
+            timezone_name = self._valid_timezone(
+                settings.get("site_timezone", "Australia/Brisbane")
+            )
+            site_zone = ZoneInfo(timezone_name)
+            oldest = connection.execute(
+                """SELECT captured_at FROM telemetry_raw
+                   WHERE julianday(captured_at) IS NOT NULL
+                   ORDER BY julianday(captured_at) ASC, id ASC LIMIT 1"""
+            ).fetchone()
+            latest = connection.execute(
+                """SELECT captured_at FROM telemetry_raw
+                   WHERE julianday(captured_at) IS NOT NULL
+                   ORDER BY julianday(captured_at) DESC, id DESC LIMIT 1"""
+            ).fetchone()
+            first_day = (
+                parse_capture(oldest["captured_at"]).astimezone(site_zone).date()
+                if oldest
+                else None
+            )
+            latest_observation_at = parse_capture(latest["captured_at"]) if latest else None
+            latest_day = (
+                latest_observation_at.astimezone(site_zone).date()
+                if latest_observation_at is not None
+                else None
+            )
+            selected_day = requested_day or latest_day or current.astimezone(site_zone).date()
+            start_utc, end_utc = day_bounds_utc(selected_day, site_zone)
+            start_text = start_utc.isoformat()
+            end_text = end_utc.isoformat()
+            bounded_start_text = (start_utc - BOUNDARY_SAMPLE_MAX_AGE).isoformat()
+
+            # Raw timestamps are ISO-8601 and are compared as instants so
+            # offsets in existing rows and DST-local bounds are handled safely.
+            day_samples = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM telemetry_raw
+                       WHERE julianday(captured_at) >= julianday(?)
+                         AND julianday(captured_at) < julianday(?)
+                       ORDER BY julianday(captured_at), inverter_id, id""",
+                    (start_text, end_text),
+                )
+            ]
+            lifetime_samples = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM telemetry_raw
+                       WHERE lifetime=1
+                         AND julianday(captured_at) >= julianday(?)
+                         AND julianday(captured_at) <= julianday(?)
+                       ORDER BY julianday(captured_at), inverter_id, id""",
+                    (bounded_start_text, end_text),
+                )
+            ]
+        finally:
+            connection.close()
+
+        return build_sigstor20_hourly_response(
+            day=selected_day,
+            timezone_name=timezone_name,
+            day_samples=day_samples,
+            lifetime_samples=lifetime_samples,
+            first_day=first_day,
+            latest_day=latest_day,
+            latest_observation_at=latest_observation_at,
+            now=current,
+        )
 
     def current_bill_summary(self) -> dict[str, Any]:
         """Compute the current billing summary and line breakdown."""

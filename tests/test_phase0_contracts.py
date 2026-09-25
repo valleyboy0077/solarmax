@@ -323,7 +323,7 @@ def test_json_mutation_successes_have_redirect_targets(service, monkeypatch):
 
 def test_legacy_pages_and_typed_read_routes_remain_available(service):
     with TestClient(app) as client:
-        pages = [client.get(path) for path in ("/", "/inverters", "/plans", "/billing", "/settings")]
+        pages = [client.get(path) for path in ("/", "/inverters", "/plans", "/billing", "/sigstor20-daily", "/settings")]
         state = client.get("/api/state")
         chart = client.get("/api/chart?days=1")
         invalid_chart = client.get("/api/chart?days=0")
@@ -332,6 +332,17 @@ def test_legacy_pages_and_typed_read_routes_remain_available(service):
     assert state.status_code == 200 and "live_observed_at" in state.json()
     assert chart.status_code == 200 and set(chart.json()) == {"points"}
     assert invalid_chart.status_code == 422
+
+
+def test_sigstor20_daily_page_excludes_billing_data(service):
+    with TestClient(app) as client:
+        response = client.get("/sigstor20-daily")
+
+    assert response.status_code == 200
+    assert "Sigstor20 daily" in response.text
+    assert "Daily Amount" not in response.text
+    assert "Current bill" not in response.text
+    assert "$" not in response.text
 
 
 def test_api_responses_are_explicitly_not_cacheable(service):
